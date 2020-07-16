@@ -1,7 +1,7 @@
 // Unless explicitly stated otherwise all files in this repository are licensed
 // under the Apache License Version 2.0.
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
-// Copyright 2016-2019 Datadog, Inc.
+// Copyright 2016-2020 Datadog, Inc.
 
 package log
 
@@ -129,6 +129,18 @@ func TestConfigStripURLPassword(t *testing.T) {
 	assertClean(t,
 		`   random_url_key:   'http://user:password@host:port'   `,
 		`   random_url_key:   'http://user:********@host:port'   `)
+	assertClean(t,
+		`   random_url_key:   'mongodb+s.r-v://user:password@host:port'   `,
+		`   random_url_key:   'mongodb+s.r-v://user:********@host:port'   `)
+	assertClean(t,
+		`   random_url_key:   'mongodb+srv://user:pass-with-hyphen@abc.example.com/database'   `,
+		`   random_url_key:   'mongodb+srv://user:********@abc.example.com/database'   `)
+	assertClean(t,
+		`   random_url_key:   'http://user-with-hyphen:pass-with-hyphen@abc.example.com/database'   `,
+		`   random_url_key:   'http://user-with-hyphen:********@abc.example.com/database'   `)
+	assertClean(t,
+		`   random_url_key:   'http://user-with-hyphen:pass@abc.example.com/database'   `,
+		`   random_url_key:   'http://user-with-hyphen:********@abc.example.com/database'   `)
 }
 
 func TestTextStripApiKey(t *testing.T) {
@@ -241,6 +253,20 @@ func TestSNMPConfig(t *testing.T) {
 		`   community_string: ********`)
 }
 
+func TestYamlConfig(t *testing.T) {
+	contents := `foobar: baz`
+	cleaned, err := CredentialsCleanerBytes([]byte(contents))
+	assert.Nil(t, err)
+	cleanedString := string(cleaned)
+
+	// Sanity check
+	assert.Equal(t, contents, cleanedString)
+
+	AddStrippedKeys([]string{"foobar"})
+
+	assertClean(t, contents, `foobar: ********`)
+}
+
 func TestCertConfig(t *testing.T) {
 	assertClean(t,
 		`cert_key: >
@@ -298,6 +324,8 @@ api_key: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 proxy: http://user:password@host:port
 password: foo
 auth_token: bar
+auth_token_file_path: /foo/bar/baz
+kubelet_auth_token_path: /foo/bar/kube_token
 # comment to strip
 log_level: info`,
 		`dd_url: https://app.datadoghq.com
@@ -305,6 +333,8 @@ api_key: ***************************aaaaa
 proxy: http://user:********@host:port
 password: ********
 auth_token: ********
+auth_token_file_path: /foo/bar/baz
+kubelet_auth_token_path: /foo/bar/kube_token
 log_level: info`)
 }
 

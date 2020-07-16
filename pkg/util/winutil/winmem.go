@@ -1,7 +1,7 @@
 // Unless explicitly stated otherwise all files in this repository are licensed
 // under the Apache License Version 2.0.
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
-// Copyright 2016-2019 Datadog, Inc.
+// Copyright 2016-2020 Datadog, Inc.
 
 // +build windows
 
@@ -121,23 +121,6 @@ func PagefileMemory() (*PagefileStat, error) {
 	return ret, nil
 }
 
-type performanceInformation struct {
-	cb                uint32
-	commitTotal       uint64
-	commitLimit       uint64
-	commitPeak        uint64
-	physicalTotal     uint64
-	physicalAvailable uint64
-	systemCache       uint64
-	kernelTotal       uint64
-	kernelPaged       uint64
-	kernelNonpaged    uint64
-	pageSize          uint64
-	handleCount       uint32
-	processCount      uint32
-	threadCount       uint32
-}
-
 // SwapMemory returns swapfile statistics
 func SwapMemory() (*SwapMemoryStat, error) {
 	var perfInfo performanceInformation
@@ -146,14 +129,14 @@ func SwapMemory() (*SwapMemoryStat, error) {
 	if mem == 0 {
 		return nil, windows.GetLastError()
 	}
-	tot := perfInfo.commitLimit * perfInfo.pageSize
-	used := perfInfo.commitTotal * perfInfo.pageSize
+	tot := uint64(perfInfo.commitLimit * perfInfo.pageSize)
+	used := uint64(perfInfo.commitTotal * perfInfo.pageSize)
 	free := tot - used
 	ret := &SwapMemoryStat{
 		Total:       tot,
 		Used:        used,
 		Free:        free,
-		UsedPercent: float64(used / tot),
+		UsedPercent: (float64(used) / float64(tot)) * 100,
 	}
 
 	return ret, nil

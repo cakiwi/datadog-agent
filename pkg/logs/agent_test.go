@@ -1,7 +1,7 @@
 // Unless explicitly stated otherwise all files in this repository are licensed
 // under the Apache License Version 2.0.
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
-// Copyright 2016-2019 Datadog, Inc.
+// Copyright 2016-2020 Datadog, Inc.
 
 package logs
 
@@ -22,6 +22,8 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/logs/config"
 	"github.com/DataDog/datadog-agent/pkg/logs/metrics"
 	"github.com/DataDog/datadog-agent/pkg/logs/service"
+
+	"github.com/DataDog/datadog-agent/pkg/util/testutil"
 )
 
 type AgentTestSuite struct {
@@ -87,7 +89,7 @@ func (suite *AgentTestSuite) TestAgent() {
 	defer l.Close()
 
 	endpoint := tcp.AddrToEndPoint(l.Addr())
-	endpoints := config.NewEndpoints(endpoint, nil, true, false)
+	endpoints := config.NewEndpoints(endpoint, nil, true, false, 0)
 
 	agent, sources, _ := createAgent(endpoints)
 
@@ -100,8 +102,10 @@ func (suite *AgentTestSuite) TestAgent() {
 
 	agent.Start()
 	sources.AddSource(suite.source)
-	// Give the tailer some time to start its job.
-	time.Sleep(10 * time.Millisecond)
+	// Give the agent at most 4 second to send the logs. (seems to be slow on Windows/AppVeyor)
+	testutil.AssertTrueBeforeTimeout(suite.T(), 10*time.Millisecond, 4*time.Second, func() bool {
+		return suite.fakeLogs == metrics.LogsSent.Value()
+	})
 	agent.Stop()
 
 	assert.Equal(suite.T(), suite.fakeLogs, metrics.LogsDecoded.Value())
@@ -116,14 +120,16 @@ func (suite *AgentTestSuite) TestAgent() {
 
 func (suite *AgentTestSuite) TestAgentStopsWithWrongBackend() {
 	endpoint := config.Endpoint{Host: "fake:", Port: 0}
-	endpoints := config.NewEndpoints(endpoint, nil, true, false)
+	endpoints := config.NewEndpoints(endpoint, nil, true, false, 0)
 
 	agent, sources, _ := createAgent(endpoints)
 
 	agent.Start()
 	sources.AddSource(suite.source)
-	// Give the tailer some time to start its job.
-	time.Sleep(10 * time.Millisecond)
+	// Give the agent at most one second to process the logs.
+	testutil.AssertTrueBeforeTimeout(suite.T(), 10*time.Millisecond, time.Second, func() bool {
+		return suite.fakeLogs == metrics.LogsProcessed.Value()
+	})
 	agent.Stop()
 
 	assert.Equal(suite.T(), suite.fakeLogs, metrics.LogsDecoded.Value())
@@ -140,14 +146,16 @@ func (suite *AgentTestSuite) TestAgentStopsWithWrongAdditionalBackend() {
 	endpoint := tcp.AddrToEndPoint(l.Addr())
 	additionalEndpoint := config.Endpoint{Host: "still_fake", Port: 0}
 
-	endpoints := config.NewEndpoints(endpoint, []config.Endpoint{additionalEndpoint}, true, false)
+	endpoints := config.NewEndpoints(endpoint, []config.Endpoint{additionalEndpoint}, true, false, 0)
 
 	agent, sources, _ := createAgent(endpoints)
 
 	agent.Start()
 	sources.AddSource(suite.source)
-	// Give the tailer some time to start its job.
-	time.Sleep(10 * time.Millisecond)
+	// Give the agent at most one second to send the logs.
+	testutil.AssertTrueBeforeTimeout(suite.T(), 10*time.Millisecond, time.Second, func() bool {
+		return int64(2) == metrics.LogsSent.Value()
+	})
 	agent.Stop()
 
 	assert.Equal(suite.T(), suite.fakeLogs, metrics.LogsDecoded.Value())

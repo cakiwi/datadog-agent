@@ -9,8 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	model "github.com/DataDog/agent-payload/process"
 	"github.com/DataDog/datadog-agent/pkg/process/config"
-	"github.com/DataDog/datadog-agent/pkg/process/model"
 	"github.com/DataDog/datadog-agent/pkg/process/util"
 	"github.com/DataDog/datadog-agent/pkg/util/containers"
 	"github.com/DataDog/gopsutil/cpu"
@@ -22,30 +22,34 @@ func TestRandomizeMessages(t *testing.T) {
 	for i, tc := range []struct {
 		testName                                string
 		pCount, cCount, cProcs, maxSize, chunks int
+		containerHostType                       model.ContainerHostType
 	}{
 		{
-			testName: "no-containers",
-			pCount:   100,
-			cCount:   0,
-			cProcs:   0,
-			maxSize:  30,
-			chunks:   4,
+			testName:          "no-containers",
+			pCount:            100,
+			cCount:            0,
+			cProcs:            0,
+			maxSize:           30,
+			chunks:            4,
+			containerHostType: model.ContainerHostType_fargateECS,
 		},
 		{
-			testName: "no-processes",
-			pCount:   0,
-			cCount:   30,
-			cProcs:   0,
-			maxSize:  10,
-			chunks:   1,
+			testName:          "no-processes",
+			pCount:            0,
+			cCount:            30,
+			cProcs:            0,
+			maxSize:           10,
+			chunks:            1,
+			containerHostType: model.ContainerHostType_fargateEKS,
 		},
 		{
-			testName: "container-process-mixed-1",
-			pCount:   100,
-			cCount:   30,
-			cProcs:   60,
-			maxSize:  30,
-			chunks:   3,
+			testName:          "container-process-mixed-1",
+			pCount:            100,
+			cCount:            30,
+			cProcs:            60,
+			maxSize:           30,
+			chunks:            3,
+			containerHostType: model.ContainerHostType_notSpecified,
 		},
 		{
 			testName: "container-process-mixed-2",
@@ -79,18 +83,19 @@ func TestRandomizeMessages(t *testing.T) {
 
 			lastRun := time.Now().Add(-5 * time.Second)
 			syst1, syst2 := cpu.TimesStat{}, cpu.TimesStat{}
-			cfg := config.NewDefaultAgentConfig()
+			cfg := config.NewDefaultAgentConfig(false)
 			sysInfo := &model.SystemInfo{}
 			lastCtrRates := util.ExtractContainerRateMetric(ctrs)
 
 			cfg.MaxPerMessage = tc.maxSize
+			cfg.ContainerHostType = tc.containerHostType
 			processes := fmtProcesses(cfg, procsByPid, procsByPid, ctrs, syst2, syst1, lastRun)
 			containers := fmtContainers(ctrs, lastCtrRates, lastRun)
-			messages, totalProcs, totalContainers := createProcCtrMessages(processes, containers, cfg, sysInfo, int32(i))
+			messages, totalProcs, totalContainers := createProcCtrMessages(processes, containers, cfg, sysInfo, int32(i), "nid")
 
 			assert.Equal(t, totalProcs, tc.pCount)
 			assert.Equal(t, totalContainers, tc.cCount)
-			procMsgsVerification(t, messages, ctrs, procs, tc.maxSize)
+			procMsgsVerification(t, messages, ctrs, procs, tc.maxSize, cfg)
 		})
 	}
 }
@@ -113,7 +118,7 @@ func TestBasicProcessMessages(t *testing.T) {
 	c[1].Pids = []int32{3}
 	lastRun := time.Now().Add(-5 * time.Second)
 	syst1, syst2 := cpu.TimesStat{}, cpu.TimesStat{}
-	cfg := config.NewDefaultAgentConfig()
+	cfg := config.NewDefaultAgentConfig(false)
 	sysInfo := &model.SystemInfo{}
 	lastCtrRates := util.ExtractContainerRateMetric(c)
 
@@ -204,7 +209,7 @@ func TestBasicProcessMessages(t *testing.T) {
 
 			procs := fmtProcesses(cfg, tc.cur, tc.last, tc.containers, syst2, syst1, lastRun)
 			containers := fmtContainers(tc.containers, lastCtrRates, lastRun)
-			messages, totalProcs, totalContainers := createProcCtrMessages(procs, containers, cfg, sysInfo, int32(i))
+			messages, totalProcs, totalContainers := createProcCtrMessages(procs, containers, cfg, sysInfo, int32(i), "nid")
 
 			assert.Equal(t, tc.expectedChunks, len(messages))
 			assert.Equal(t, tc.totalProcs, totalProcs)

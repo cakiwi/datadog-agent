@@ -1,8 +1,8 @@
 package checks
 
 import (
+	model "github.com/DataDog/agent-payload/process"
 	"github.com/DataDog/datadog-agent/pkg/process/config"
-	"github.com/DataDog/datadog-agent/pkg/process/model"
 )
 
 // Check is an interface for Agent checks that collect data. Each check returns
@@ -12,7 +12,6 @@ import (
 type Check interface {
 	Init(cfg *config.AgentConfig, info *model.SystemInfo)
 	Name() string
-	Endpoint() string
 	RealTime() bool
 	Run(cfg *config.AgentConfig, groupID int32) ([]model.MessageBody, error)
 }
@@ -24,4 +23,5 @@ var All = []Check{
 	Container,
 	RTContainer,
 	Connections,
+	Pod,
 }

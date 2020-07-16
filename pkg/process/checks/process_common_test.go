@@ -11,23 +11,27 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	model "github.com/DataDog/agent-payload/process"
 	"github.com/DataDog/datadog-agent/pkg/process/config"
-	"github.com/DataDog/datadog-agent/pkg/process/model"
 	"github.com/DataDog/datadog-agent/pkg/util/containers"
 	"github.com/DataDog/datadog-agent/pkg/util/containers/metrics"
 	"github.com/DataDog/gopsutil/cpu"
 	"github.com/DataDog/gopsutil/process"
 )
 
+//nolint:unused
 func makeContainer(id string) *containers.Container {
 	return &containers.Container{
-		ID:     id,
-		CPU:    &metrics.CgroupTimesStat{},
-		Memory: &metrics.CgroupMemStat{},
-		IO:     &metrics.CgroupIOStat{},
+		ID: id,
+		ContainerMetrics: metrics.ContainerMetrics{
+			CPU:    &metrics.ContainerCPUStats{},
+			Memory: &metrics.ContainerMemStats{},
+			IO:     &metrics.ContainerIOStats{},
+		},
 	}
 }
 
+//nolint:deadcode,unused
 func procCtrGenerator(pCount int, cCount int, containeredProcs int) ([]*process.FilledProcess, []*containers.Container) {
 	procs := make([]*process.FilledProcess, 0, pCount)
 	for i := 0; i < pCount; i++ {
@@ -53,6 +57,7 @@ func procCtrGenerator(pCount int, cCount int, containeredProcs int) ([]*process.
 	return procs, ctrs
 }
 
+//nolint:deadcode,unused
 func procsToHash(procs []*process.FilledProcess) (procsByPid map[int32]*process.FilledProcess) {
 	procsByPid = make(map[int32]*process.FilledProcess)
 	for _, p := range procs {
@@ -70,8 +75,9 @@ func makeProcess(pid int32, cmdline string) *process.FilledProcess {
 	}
 }
 
+//nolint:deadcode,unused
 // procMsgsVerification takes raw containers and processes and make sure the chunked messages have all data, and each chunk has the correct grouping
-func procMsgsVerification(t *testing.T, msgs []model.MessageBody, rawContainers []*containers.Container, rawProcesses []*process.FilledProcess, maxSize int) {
+func procMsgsVerification(t *testing.T, msgs []model.MessageBody, rawContainers []*containers.Container, rawProcesses []*process.FilledProcess, maxSize int, cfg *config.AgentConfig) {
 	actualProcs := 0
 	for _, msg := range msgs {
 		payload := msg.(*model.CollectorProc)
@@ -100,6 +106,7 @@ func procMsgsVerification(t *testing.T, msgs []model.MessageBody, rawContainers 
 			assert.True(t, len(payload.Processes) <= maxSize)
 			actualProcs += len(payload.Processes)
 		}
+		assert.Equal(t, cfg.ContainerHostType, payload.ContainerHostType)
 	}
 	assert.Equal(t, len(rawProcesses), actualProcs)
 }
@@ -114,7 +121,7 @@ func TestProcessChunking(t *testing.T) {
 	containers := []*containers.Container{}
 	lastRun := time.Now().Add(-5 * time.Second)
 	syst1, syst2 := cpu.TimesStat{}, cpu.TimesStat{}
-	cfg := config.NewDefaultAgentConfig()
+	cfg := config.NewDefaultAgentConfig(false)
 
 	for i, tc := range []struct {
 		cur, last      []*process.FilledProcess

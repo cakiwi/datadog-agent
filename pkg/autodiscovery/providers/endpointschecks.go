@@ -1,14 +1,17 @@
 // Unless explicitly stated otherwise all files in this repository are licensed
 // under the Apache License Version 2.0.
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
-// Copyright 2016-2019 Datadog, Inc.
+// Copyright 2016-2020 Datadog, Inc.
 
 // +build kubelet
 
 package providers
 
 import (
+	"fmt"
+
 	"github.com/DataDog/datadog-agent/pkg/autodiscovery/integration"
+	"github.com/DataDog/datadog-agent/pkg/autodiscovery/providers/names"
 	"github.com/DataDog/datadog-agent/pkg/config"
 	"github.com/DataDog/datadog-agent/pkg/util/clusteragent"
 	"github.com/DataDog/datadog-agent/pkg/util/kubernetes/kubelet"
@@ -43,7 +46,7 @@ func NewEndpointsChecksConfigProvider(cfg config.ConfigurationProviders) (Config
 
 // String returns a string representation of the EndpointsChecksConfigProvider
 func (c *EndpointsChecksConfigProvider) String() string {
-	return EndpointsChecks
+	return names.EndpointsChecks
 }
 
 // IsUpToDate updates the list of AD templates versions in the Agent's cache and checks the list is up to date compared to Kubernetes's data.
@@ -73,8 +76,16 @@ func (c *EndpointsChecksConfigProvider) Collect() ([]integration.Config, error) 
 	return reply.Configs, nil
 }
 
-// getNodename retrieves current node name from kubelet.
+// getNodename retrieves current node name from kubelet (if running on Kubernetes)
+// or bosh ID of current node (if running on Cloud Foundry).
 func getNodename() (string, error) {
+	if config.Datadog.GetBool("cloud_foundry") {
+		boshID := config.Datadog.GetString("bosh_id")
+		if boshID == "" {
+			return "", fmt.Errorf("configuration variable cloud_foundry is set to true, but bosh_id is empty, can't retrieve node name")
+		}
+		return boshID, nil
+	}
 	ku, err := kubelet.GetKubeUtil()
 	if err != nil {
 		log.Errorf("Cannot get kubeUtil object: %s", err)

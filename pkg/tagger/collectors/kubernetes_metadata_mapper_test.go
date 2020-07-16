@@ -1,7 +1,7 @@
 // Unless explicitly stated otherwise all files in this repository are licensed
 // under the Apache License Version 2.0.
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
-// Copyright 2016-2019 Datadog, Inc.
+// Copyright 2016-2020 Datadog, Inc.
 
 // +build kubeapiserver,kubelet
 
@@ -79,13 +79,17 @@ func (f *FakeDCAClient) GetEndpointsCheckConfigs(nodeName string) (types.ConfigR
 	return f.EndpointsCheckConfigs, f.EndpointsCheckConfigsErr
 }
 
+func (f *FakeDCAClient) GetCFAppsMetadataForNode(nodename string) (map[string][]string, error) {
+	panic("implement me")
+}
+
 func TestKubeMetadataCollector_getMetadaNames(t *testing.T) {
 	type fields struct {
 		dcaClient           clusteragent.DCAClientInterface
 		clusterAgentEnabled bool
 	}
 	type args struct {
-		getPodMetaDataFromApiServerFunc func(string, string, string) ([]string, error)
+		getPodMetaDataFromAPIServerFunc func(string, string, string) ([]string, error)
 		metadataByNsPods                apiv1.NamespacesPodsStringsSet
 		po                              *kubelet.Pod
 	}
@@ -100,7 +104,7 @@ func TestKubeMetadataCollector_getMetadaNames(t *testing.T) {
 		{
 			name: "clusterAgentEnabled not enable",
 			args: args{
-				getPodMetaDataFromApiServerFunc: func(string, string, string) ([]string, error) {
+				getPodMetaDataFromAPIServerFunc: func(string, string, string) ([]string, error) {
 					return []string{"foo=bar"}, nil
 				},
 				po: &kubelet.Pod{},
@@ -116,7 +120,7 @@ func TestKubeMetadataCollector_getMetadaNames(t *testing.T) {
 		{
 			name: "clusterAgentEnabled not enable, APIserver return error",
 			args: args{
-				getPodMetaDataFromApiServerFunc: func(string, string, string) ([]string, error) {
+				getPodMetaDataFromAPIServerFunc: func(string, string, string) ([]string, error) {
 					return nil, fmt.Errorf("fake error")
 				},
 				po: &kubelet.Pod{},
@@ -132,7 +136,7 @@ func TestKubeMetadataCollector_getMetadaNames(t *testing.T) {
 		{
 			name: "clusterAgentEnabled enable, but old version",
 			args: args{
-				getPodMetaDataFromApiServerFunc: func(string, string, string) ([]string, error) {
+				getPodMetaDataFromAPIServerFunc: func(string, string, string) ([]string, error) {
 					return []string{"foo=bar"}, nil
 				},
 				po: &kubelet.Pod{},
@@ -151,7 +155,7 @@ func TestKubeMetadataCollector_getMetadaNames(t *testing.T) {
 		{
 			name: "clusterAgentEnabled enable, but old version",
 			args: args{
-				getPodMetaDataFromApiServerFunc: func(string, string, string) ([]string, error) {
+				getPodMetaDataFromAPIServerFunc: func(string, string, string) ([]string, error) {
 					return []string{"foo=bar"}, nil
 				},
 				po: &kubelet.Pod{},
@@ -167,7 +171,7 @@ func TestKubeMetadataCollector_getMetadaNames(t *testing.T) {
 		{
 			name: "clusterAgentEnabled enable, but old version, DCS return error",
 			args: args{
-				getPodMetaDataFromApiServerFunc: func(string, string, string) ([]string, error) {
+				getPodMetaDataFromAPIServerFunc: func(string, string, string) ([]string, error) {
 					return []string{"foo=bar"}, nil
 				},
 				po: &kubelet.Pod{},
@@ -186,7 +190,7 @@ func TestKubeMetadataCollector_getMetadaNames(t *testing.T) {
 		{
 			name: "clusterAgentEnabled enable with new version",
 			args: args{
-				getPodMetaDataFromApiServerFunc: func(string, string, string) ([]string, error) {
+				getPodMetaDataFromAPIServerFunc: func(string, string, string) ([]string, error) {
 					return []string{"foo=bar"}, nil
 				},
 				po: &kubelet.Pod{Metadata: kubelet.PodMetadata{
@@ -211,7 +215,7 @@ func TestKubeMetadataCollector_getMetadaNames(t *testing.T) {
 		{
 			name: "clusterAgentEnabled enable with new version (error case, pod not exist)",
 			args: args{
-				getPodMetaDataFromApiServerFunc: func(string, string, string) ([]string, error) {
+				getPodMetaDataFromAPIServerFunc: func(string, string, string) ([]string, error) {
 					return []string{"foo=bar"}, nil
 				},
 				po: &kubelet.Pod{Metadata: kubelet.PodMetadata{
@@ -238,7 +242,7 @@ func TestKubeMetadataCollector_getMetadaNames(t *testing.T) {
 				dcaClient:           tt.fields.dcaClient,
 				clusterAgentEnabled: tt.fields.clusterAgentEnabled,
 			}
-			got, err := c.getMetadaNames(tt.args.getPodMetaDataFromApiServerFunc, tt.args.metadataByNsPods, tt.args.po)
+			got, err := c.getMetadaNames(tt.args.getPodMetaDataFromAPIServerFunc, tt.args.metadataByNsPods, tt.args.po)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("KubeMetadataCollector.getMetadaNames() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -310,7 +314,7 @@ func TestKubeMetadataCollector_getTagInfos(t *testing.T) {
 			want: []*TagInfo{
 				{
 					Source:               kubeMetadataCollectorName,
-					Entity:               kubelet.PodUIDToEntityName("foouid"),
+					Entity:               kubelet.PodUIDToTaggerEntityName("foouid"),
 					HighCardTags:         []string{},
 					OrchestratorCardTags: []string{},
 					LowCardTags: []string{
@@ -333,7 +337,7 @@ func TestKubeMetadataCollector_getTagInfos(t *testing.T) {
 			want: []*TagInfo{
 				{
 					Source:               kubeMetadataCollectorName,
-					Entity:               kubelet.PodUIDToEntityName("foouid"),
+					Entity:               kubelet.PodUIDToTaggerEntityName("foouid"),
 					HighCardTags:         []string{},
 					OrchestratorCardTags: []string{},
 					LowCardTags:          []string{},

@@ -9,7 +9,8 @@ static const __u8 GUESS_FAMILY = 2;
 static const __u8 GUESS_SPORT = 3;
 static const __u8 GUESS_DPORT = 4;
 static const __u8 GUESS_NETNS = 5;
-static const __u8 GUESS_DADDR_IPV6 = 6;
+static const __u8 GUESS_RTT = 6;
+static const __u8 GUESS_DADDR_IPV6 = 7;
 
 #ifndef TASK_COMM_LEN
 #define TASK_COMM_LEN 16
@@ -55,6 +56,8 @@ typedef struct {
 
 typedef struct {
     __u32 retransmits;
+    __u32 rtt;
+    __u32 rtt_var;
 } tcp_stats_t;
 
 // Full data for a tcp connection
@@ -64,6 +67,25 @@ typedef struct {
     tcp_stats_t tcp_stats;
 } tcp_conn_t;
 
+
+// Must match the number of tcp_conn_t objects embedded in the batch_t struct
+#ifndef TCP_CLOSED_BATCH_SIZE
+#define TCP_CLOSED_BATCH_SIZE 5
+#endif
+
+// This struct is meant to be used as a container for batching
+// writes to the perf buffer. Ideally we should have an array of tcp_conn_t objects
+// but apparently eBPF verifier doesn't allow arbitrary index access during runtime.
+typedef struct {
+    tcp_conn_t c0;
+    tcp_conn_t c1;
+    tcp_conn_t c2;
+    tcp_conn_t c3;
+    tcp_conn_t c4;
+    __u16 pos;
+    __u16 cpu;
+} batch_t;
+
 static const __u8 TRACER_STATE_UNINITIALIZED = 0;
 static const __u8 TRACER_STATE_CHECKING = 1;
 static const __u8 TRACER_STATE_CHECKED = 2;
@@ -72,8 +94,17 @@ static const __u8 TRACER_STATE_READY = 3;
 static const __u8 TRACER_IPV6_DISABLED = 0;
 static const __u8 TRACER_IPV6_ENABLED = 1;
 
+// Telemetry names
+typedef struct {
+    __u64 tcp_sent_miscounts;
+    __u64 missed_tcp_close;
+} telemetry_t;
+
 typedef struct {
     __u64 state;
+    // tcp_info_kprobe_status records if the tcp_info kprobe has been triggered.
+    // 0 - not triggered 1 - triggered
+    __u64 tcp_info_kprobe_status;
 
     /* checking */
     proc_t proc;
@@ -85,12 +116,16 @@ typedef struct {
     __u64 offset_netns;
     __u64 offset_ino;
     __u64 offset_family;
+    __u64 offset_rtt;
+    __u64 offset_rtt_var;
     __u64 offset_daddr_ipv6;
 
     __u64 err;
 
     __u32 daddr_ipv6[4];
     __u32 netns;
+    __u32 rtt;
+    __u32 rtt_var;
     __u32 saddr;
     __u32 daddr;
     __u16 sport;
@@ -103,5 +138,11 @@ typedef struct {
 
 #define PORT_LISTENING 1
 #define PORT_CLOSED 0
+
+
+typedef struct {
+  __u16 port;
+  __u64 fd;
+} bind_syscall_args_t;
 
 #endif

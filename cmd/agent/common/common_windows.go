@@ -1,7 +1,7 @@
 // Unless explicitly stated otherwise all files in this repository are licensed
 // under the Apache License Version 2.0.
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
-// Copyright 2016-2019 Datadog, Inc.
+// Copyright 2016-2020 Datadog, Inc.
 
 package common
 
@@ -10,15 +10,17 @@ import (
 	"io/ioutil"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
-	"path/filepath"
-
 	"github.com/DataDog/datadog-agent/pkg/config"
-
 	"github.com/DataDog/datadog-agent/pkg/util/log"
 	"github.com/DataDog/datadog-agent/pkg/util/winutil"
+
+	// Init packages
+	_ "github.com/DataDog/datadog-agent/pkg/util/containers/providers/windows"
+
 	"github.com/cihub/seelog"
 	"golang.org/x/sys/windows/registry"
 	yaml "gopkg.in/yaml.v2"
@@ -125,7 +127,7 @@ func CheckAndUpgradeConfig() error {
 		return nil
 	}
 	config.Datadog.AddConfigPath(DefaultConfPath)
-	err := config.Load()
+	_, err := config.Load()
 	if err == nil {
 		// was able to read config, check for api key
 		if config.Datadog.GetString("api_key") != "" {
@@ -153,7 +155,7 @@ func ImportRegistryConfig() error {
 	}
 	defer k.Close()
 
-	err = SetupConfigWithoutSecrets("")
+	err = SetupConfigWithoutSecrets("", "")
 	if err != nil {
 		return fmt.Errorf("unable to set up global agent configuration: %v", err)
 	}
@@ -280,12 +282,20 @@ func ImportRegistryConfig() error {
 		overrides["apm_config.apm_dd_url"] = val
 		log.Debugf("Setting apm_config.apm_dd_url to %s", val)
 	}
+	if val, _, err = k.GetStringValue("py_version"); err == nil && val != "" {
+		overrides["python_version"] = val
+		log.Debugf("Setting python version to %s", val)
+	}
+	if val, _, err = k.GetStringValue("hostname_fqdn"); err == nil && val != "" {
+		overrides["hostname_fqdn"] = val
+		log.Debugf("Setting hostname_fqdn to %s", val)
+	}
 
 	// apply overrides to the config
-	config.SetOverrides(overrides)
+	config.AddOverrides(overrides)
 
 	// build the global agent configuration
-	err = SetupConfigWithoutSecrets("")
+	err = SetupConfigWithoutSecrets("", "")
 	if err != nil {
 		return fmt.Errorf("unable to set up global agent configuration: %v", err)
 	}

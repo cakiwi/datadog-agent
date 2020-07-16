@@ -1,7 +1,7 @@
 // Unless explicitly stated otherwise all files in this repository are licensed
 // under the Apache License Version 2.0.
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
-// Copyright 2016-2019 Datadog, Inc.
+// Copyright 2016-2020 Datadog, Inc.
 
 // +build kubelet
 
@@ -23,11 +23,12 @@ const unreadinessTimeout = 30 * time.Second
 // It keeps an internal state to only send the updated pods.
 type PodWatcher struct {
 	sync.Mutex
-	kubeUtil       *KubeUtil
+	kubeUtil       KubeUtilInterface
 	expiryDuration time.Duration
 	lastSeen       map[string]time.Time
 	lastSeenReady  map[string]time.Time
 	tagsDigest     map[string]string
+	oldPhase       map[string]string
 }
 
 // NewPodWatcher creates a new watcher given an expiry duration
@@ -46,6 +47,7 @@ func NewPodWatcher(expiryDuration time.Duration, isWatchingTags bool) (*PodWatch
 	}
 	if isWatchingTags {
 		watcher.tagsDigest = make(map[string]string)
+		watcher.oldPhase = make(map[string]string)
 	}
 	return watcher, nil
 }
@@ -82,6 +84,7 @@ func (w *PodWatcher) computeChanges(podList []*Pod) ([]*Pod, error) {
 
 		if w.isWatchingTags() && !foundPod {
 			w.tagsDigest[podEntity] = digestPodMeta(pod.Metadata)
+			w.oldPhase[podEntity] = pod.Status.Phase
 		}
 
 		// static pods are included specifically because they won't have any container
@@ -123,6 +126,8 @@ func (w *PodWatcher) computeChanges(podList []*Pod) ([]*Pod, error) {
 
 		// Detect changes in labels and annotations values
 		newLabelsOrAnnotations := false
+		// Detect changes in the pod phase
+		newPhase := false
 		if w.isWatchingTags() {
 			newTagsDigest := digestPodMeta(pod.Metadata)
 			if foundPod && newTagsDigest != w.tagsDigest[podEntity] {
@@ -130,9 +135,13 @@ func (w *PodWatcher) computeChanges(podList []*Pod) ([]*Pod, error) {
 				w.tagsDigest[podEntity] = newTagsDigest
 				newLabelsOrAnnotations = true
 			}
+			// compared to our last seen phase the pod phase has changed.
+			if foundPod && pod.Status.Phase != w.oldPhase[podEntity] {
+				w.oldPhase[podEntity] = pod.Status.Phase
+				newPhase = true
+			}
 		}
-
-		if newStaticPod || updatedContainer || newLabelsOrAnnotations {
+		if newStaticPod || updatedContainer || newLabelsOrAnnotations || newPhase {
 			updatedPods = append(updatedPods, pod)
 		}
 	}
@@ -158,12 +167,13 @@ func (w *PodWatcher) Expire() ([]string, error) {
 			delete(w.lastSeenReady, id)
 			if w.isWatchingTags() {
 				delete(w.tagsDigest, id)
+				delete(w.oldPhase, id)
 			}
 			expiredContainers = append(expiredContainers, id)
 		}
 	}
 	for id, lastSeenReady := range w.lastSeenReady {
-		// we keep pods gone unready for 30 seconds and then force removal
+		// we keep pods gone unready for 25 seconds and then force removal
 		if now.Sub(lastSeenReady) > unreadinessTimeout {
 			delete(w.lastSeenReady, id)
 			expiredContainers = append(expiredContainers, id)
@@ -185,8 +195,8 @@ func (w *PodWatcher) GetPodForEntityID(entityID string) (*Pod, error) {
 // it hashes labels then annotations and makes a single hash of both maps
 func digestPodMeta(meta PodMetadata) string {
 	h := fnv.New64()
-	h.Write([]byte(digestMapValues(meta.Labels)))
-	h.Write([]byte(digestMapValues(meta.Annotations)))
+	h.Write([]byte(digestMapValues(meta.Labels)))      //nolint:errcheck
+	h.Write([]byte(digestMapValues(meta.Annotations))) //nolint:errcheck
 	return strconv.FormatUint(h.Sum64(), 16)
 }
 
@@ -207,7 +217,7 @@ func digestMapValues(m map[string]string) string {
 	sort.Strings(keys)
 	h := fnv.New64()
 	for _, k := range keys {
-		h.Write([]byte(m[k]))
+		h.Write([]byte(m[k])) //nolint:errcheck
 	}
 	return strconv.FormatUint(h.Sum64(), 16)
 }

@@ -1,13 +1,14 @@
 // Unless explicitly stated otherwise all files in this repository are licensed
 // under the Apache License Version 2.0.
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
-// Copyright 2016-2019 Datadog, Inc.
+// Copyright 2016-2020 Datadog, Inc.
 
 package security
 
 import (
+	"fmt"
 	"io/ioutil"
-	"os/user"
+	"syscall"
 
 	"github.com/DataDog/datadog-agent/pkg/util/log"
 	acl "github.com/hectane/go-acl"
@@ -32,15 +33,41 @@ func init() {
 	}
 }
 
+// lookupUsernameAndDomain obtains the username and domain for usid.
+func lookupUsernameAndDomain(usid *syscall.SID) (username, domain string, e error) {
+	username, domain, t, e := usid.LookupAccount("")
+	if e != nil {
+		return "", "", e
+	}
+	if t != syscall.SidTypeUser {
+		return "", "", fmt.Errorf("user: should be user account type, not %d", t)
+	}
+	return username, domain, nil
+}
+
 // writes auth token(s) to a file with the same permissions as datadog.yaml
 func saveAuthToken(token, tokenPath string) error {
 	// get the current user
-	currUser, err := user.Current()
-	if err != nil {
-		log.Warnf("Unable to get current user %v", err)
-		return err
+	var sidString string
+	log.Infof("Getting sidstring from user")
+	tok, e := syscall.OpenCurrentProcessToken()
+	if e != nil {
+		log.Warnf("Couldn't get process token %v", e)
+		return e
 	}
-	currUserSid, err := windows.StringToSid(currUser.Uid)
+	defer tok.Close()
+	user, e := tok.GetTokenUser()
+	if e != nil {
+		log.Warnf("Couldn't get  token user %v", e)
+		return e
+	}
+	sidString, e = user.User.Sid.String()
+	if e != nil {
+		log.Warnf("Couldn't get  user sid string %v", e)
+		return e
+	}
+	log.Infof("Getting sidstring from current user")
+	currUserSid, err := windows.StringToSid(sidString)
 	if err != nil {
 		log.Warnf("Unable to get current user sid %v", err)
 		return err

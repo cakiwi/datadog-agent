@@ -1,12 +1,13 @@
 // Unless explicitly stated otherwise all files in this repository are licensed
 // under the Apache License Version 2.0.
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
-// Copyright 2016-2019 Datadog, Inc.
+// Copyright 2016-2020 Datadog, Inc.
 
 package status
 
 import (
 	"expvar"
+	"fmt"
 	"strings"
 	"sync/atomic"
 
@@ -16,6 +17,7 @@ import (
 // Builder is used to build the status.
 type Builder struct {
 	isRunning   *int32
+	endpoints   *config.Endpoints
 	sources     *config.LogSources
 	warnings    *config.Messages
 	errors      *config.Messages
@@ -23,9 +25,10 @@ type Builder struct {
 }
 
 // NewBuilder returns a new builder.
-func NewBuilder(isRunning *int32, sources *config.LogSources, warnings *config.Messages, errors *config.Messages, logExpVars *expvar.Map) *Builder {
+func NewBuilder(isRunning *int32, endpoints *config.Endpoints, sources *config.LogSources, warnings *config.Messages, errors *config.Messages, logExpVars *expvar.Map) *Builder {
 	return &Builder{
 		isRunning:   isRunning,
+		endpoints:   endpoints,
 		sources:     sources,
 		warnings:    warnings,
 		errors:      errors,
@@ -37,10 +40,12 @@ func NewBuilder(isRunning *int32, sources *config.LogSources, warnings *config.M
 func (b *Builder) BuildStatus() Status {
 	return Status{
 		IsRunning:     b.getIsRunning(),
+		Endpoints:     b.getEndpoints(),
 		Integrations:  b.getIntegrations(),
 		StatusMetrics: b.getMetricsStatus(),
 		Warnings:      b.getWarnings(),
 		Errors:        b.getErrors(),
+		UseHTTP:       b.getUseHTTP(),
 	}
 }
 
@@ -49,6 +54,54 @@ func (b *Builder) BuildStatus() Status {
 // from different commands (start, stop, status).
 func (b *Builder) getIsRunning() bool {
 	return atomic.LoadInt32(b.isRunning) != 0
+}
+
+func (b *Builder) getUseHTTP() bool {
+	return b.endpoints.UseHTTP
+}
+
+func (b *Builder) getEndpoints() []string {
+	result := make([]string, 0)
+	result = append(result, b.formatEndpoint(b.endpoints.Main, ""))
+	for _, additional := range b.endpoints.Additionals {
+		result = append(result, b.formatEndpoint(additional, "Additional: "))
+	}
+	return result
+}
+
+func (b *Builder) formatEndpoint(endpoint config.Endpoint, prefix string) string {
+	compression := "uncompressed"
+	if endpoint.UseCompression {
+		compression = "compressed"
+	}
+
+	host := endpoint.Host
+	port := endpoint.Port
+
+	var protocol string
+	if b.endpoints.UseHTTP {
+		if endpoint.UseSSL {
+			protocol = "HTTPS"
+			if port == 0 {
+				port = 443 // use default port
+			}
+		} else {
+			protocol = "HTTP"
+			// this case technically can't happens. In order to
+			// disable SSL, user have to use a custom URL and
+			// specify the port manually.
+			if port == 0 {
+				port = 80 // use default port
+			}
+		}
+	} else {
+		if endpoint.UseSSL {
+			protocol = "SSL encrypted TCP"
+		} else {
+			protocol = "TCP"
+		}
+	}
+	return fmt.Sprintf("%sSending %s logs in %s to %s on port %d", prefix, compression, protocol, host, port)
 }
 
 // getWarnings returns all the warning messages that
@@ -119,6 +172,7 @@ func (b *Builder) toDictionary(c *config.LogsConfig) map[string]interface{} {
 		dictionary["Port"] = c.Port
 	case config.FileType:
 		dictionary["Path"] = c.Path
+		dictionary["TailingMode"] = c.TailingMode
 	case config.DockerType:
 		dictionary["Image"] = c.Image
 		dictionary["Label"] = c.Label
@@ -143,5 +197,7 @@ func (b *Builder) getMetricsStatus() map[string]int64 {
 	var metrics = make(map[string]int64, 2)
 	metrics["LogsProcessed"] = b.logsExpVars.Get("LogsProcessed").(*expvar.Int).Value()
 	metrics["LogsSent"] = b.logsExpVars.Get("LogsSent").(*expvar.Int).Value()
+	metrics["BytesSent"] = b.logsExpVars.Get("BytesSent").(*expvar.Int).Value()
+	metrics["EncodedBytesSent"] = b.logsExpVars.Get("EncodedBytesSent").(*expvar.Int).Value()
 	return metrics
 }

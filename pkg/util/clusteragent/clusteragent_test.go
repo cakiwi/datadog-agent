@@ -1,7 +1,7 @@
 // Unless explicitly stated otherwise all files in this repository are licensed
 // under the Apache License Version 2.0.
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
-// Copyright 2016-2019 Datadog, Inc.
+// Copyright 2016-2020 Datadog, Inc.
 
 package clusteragent
 
@@ -94,6 +94,22 @@ func newDummyClusterAgent() (*dummyClusterAgent, error) {
 	return dca, nil
 }
 
+func newDummyClusterAgentWithCFMetadata() (*dummyClusterAgent, error) {
+	resetGlobalClusterAgentClient()
+	dca := &dummyClusterAgent{
+		rawResponses: map[string]string{
+			"/api/v1/tags/cf/apps/cell1": `{"instance1": ["container_name:app1_0"]}`,
+			"/api/v1/tags/cf/apps/cell2": `{"instance2": ["container_name:app1_1"], "instance3": ["container_name:app2_0", "instance:0"]}`,
+			"/api/v1/tags/cf/apps/cell3": `{}`,
+			"/version":                   `{"Major":0, "Minor":0, "Patch":0, "Pre":"test", "Meta":"test", "Commit":"1337"}`,
+		},
+		requests: make(chan *http.Request, 100),
+		token:    config.Datadog.GetString("cluster_agent.auth_token"),
+	}
+
+	return dca, nil
+}
+
 func (d *dummyClusterAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Debugf("dummyDCA received %s on %s", r.Method, r.URL.Path)
 	d.requests <- r
@@ -107,6 +123,13 @@ func (d *dummyClusterAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if token != fmt.Sprintf("Bearer %s", d.token) {
 		log.Errorf("wrong token %s", token)
 		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+
+	podIP := r.Header.Get(RealIPHeader)
+	if podIP != clcRunnerIP {
+		log.Errorf("wrong clc runner IP: %s", podIP)
+		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
@@ -145,6 +168,15 @@ func (d *dummyClusterAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			w.Write(b)
+			return
+		}
+	// Cloudfoundry metadata case: /api/v1/tags/cf/apps/{nodename}
+	case 7:
+		nodeName := s[6]
+		d.RLock()
+		defer d.RUnlock()
+		if tags, found := d.rawResponses[nodeName]; found {
+			w.Write([]byte(tags))
 			return
 		}
 	case 6:
@@ -228,6 +260,7 @@ const (
 	clusterAgentServiceHost = clusterAgentServiceName + "_SERVICE_HOST"
 	clusterAgentServicePort = clusterAgentServiceName + "_SERVICE_PORT"
 	clusterAgentTokenValue  = "01234567890123456789012345678901"
+	clcRunnerIP             = "10.92.1.39"
 )
 
 func (suite *clusterAgentSuite) SetupTest() {
@@ -235,6 +268,7 @@ func (suite *clusterAgentSuite) SetupTest() {
 	mockConfig.Set("cluster_agent.auth_token", clusterAgentTokenValue)
 	mockConfig.Set("cluster_agent.url", "")
 	mockConfig.Set("cluster_agent.kubernetes_service_name", "")
+	mockConfig.Set("clc_runner_host", clcRunnerIP)
 	os.Unsetenv(clusterAgentServiceHost)
 	os.Unsetenv(clusterAgentServicePort)
 }
@@ -250,7 +284,7 @@ func (suite *clusterAgentSuite) TestGetClusterAgentEndpointEmpty() {
 func (suite *clusterAgentSuite) TestGetClusterAgentAuthTokenEmpty() {
 	mockConfig.Set("cluster_agent.auth_token", "")
 
-	_, err := security.GetClusterAgentAuthToken()
+	_, err := security.CreateOrGetClusterAgentAuthToken()
 	require.Nil(suite.T(), err, fmt.Sprintf("%v", err))
 }
 
@@ -484,6 +518,48 @@ func (suite *clusterAgentSuite) TestGetKubernetesMetadataNames() {
 	}
 }
 
+func (suite *clusterAgentSuite) TestGetCFAppsMetadataForNode() {
+	dca, err := newDummyClusterAgentWithCFMetadata()
+	require.Nil(suite.T(), err, fmt.Sprintf("%v", err))
+
+	ts, p, err := dca.StartTLS()
+	defer ts.Close()
+	require.Nil(suite.T(), err, fmt.Sprintf("%v", err))
+
+	mockConfig.Set("cluster_agent.url", fmt.Sprintf("https://127.0.0.1:%d", p))
+
+	ca, err := GetClusterAgentClient()
+	require.Nil(suite.T(), err, fmt.Sprintf("%v", err))
+
+	testSuite := []struct {
+		nodeName     string
+		expectedTags map[string][]string
+	}{
+		{
+			nodeName:     "cell1",
+			expectedTags: map[string][]string{"instance1": {"container_name:app1_0"}},
+		},
+		{
+			nodeName:     "cell2",
+			expectedTags: map[string][]string{"instance2": {"container_name:app1_1"}, "instance3": {"container_name:app2_0", "instance:0"}},
+		},
+		{
+			nodeName:     "cell3",
+			expectedTags: map[string][]string{},
+		},
+	}
+	for _, testCase := range testSuite {
+		suite.T().Run("", func(t *testing.T) {
+			tags, err := ca.GetCFAppsMetadataForNode(testCase.nodeName)
+			t.Logf("tags: %s", tags)
+
+			require.Nil(t, err, fmt.Sprintf("%v", err))
+			require.Equal(t, len(testCase.expectedTags), len(tags))
+			assert.EqualValues(t, testCase.expectedTags, tags)
+		})
+	}
+}
+
 func (suite *clusterAgentSuite) TestGetPodsMetadataForNode() {
 	dca, err := newDummyClusterAgent()
 	require.Nil(suite.T(), err, fmt.Sprintf("%v", err))
@@ -555,6 +631,7 @@ func (suite *clusterAgentSuite) TestGetPodsMetadataForNode() {
 		})
 	}
 }
+
 func TestClusterAgentSuite(t *testing.T) {
 	clusterAgentAuthTokenFilename := "cluster_agent.auth_token"
 

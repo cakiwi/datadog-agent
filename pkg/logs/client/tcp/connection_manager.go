@@ -1,7 +1,7 @@
 // Unless explicitly stated otherwise all files in this repository are licensed
 // under the Apache License Version 2.0.
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
-// Copyright 2016-2019 Datadog, Inc.
+// Copyright 2016-2020 Datadog, Inc.
 
 package tcp
 
@@ -43,6 +43,12 @@ func NewConnectionManager(endpoint config.Endpoint) *ConnectionManager {
 	}
 }
 
+type tlsTimeoutError struct{}
+
+func (tlsTimeoutError) Error() string {
+	return "tls: Handshake timed out"
+}
+
 // NewConnection returns an initialized connection to the intake.
 // It blocks until a connection is available
 func (cm *ConnectionManager) NewConnection(ctx context.Context) (net.Conn, error) {
@@ -79,7 +85,6 @@ func (cm *ConnectionManager) NewConnection(ctx context.Context) (net.Conn, error
 		}
 
 		var conn net.Conn
-
 		if cm.endpoint.ProxyAddress != "" {
 			var dialer proxy.Dialer
 			dialer, err = proxy.SOCKS5("tcp", cm.endpoint.ProxyAddress, nil, proxy.Direct)
@@ -99,14 +104,13 @@ func (cm *ConnectionManager) NewConnection(ctx context.Context) (net.Conn, error
 			log.Warn(err)
 			continue
 		}
-		log.Debug("connected to %v", cm.address())
+		log.Debugf("connected to %v", cm.address())
 
 		if cm.endpoint.UseSSL {
 			sslConn := tls.Client(conn, &tls.Config{
 				ServerName: cm.endpoint.Host,
 			})
-			// TODO: handle timeouts with ctx.
-			err = sslConn.Handshake()
+			err = cm.handshakeWithTimeout(sslConn, connectionTimeout)
 			if err != nil {
 				log.Warn(err)
 				continue
@@ -121,6 +125,19 @@ func (cm *ConnectionManager) NewConnection(ctx context.Context) (net.Conn, error
 	}
 }
 
+func (cm *ConnectionManager) handshakeWithTimeout(conn *tls.Conn, timeout time.Duration) error {
+	errChannel := make(chan error, 2)
+	time.AfterFunc(timeout, func() {
+		errChannel <- tlsTimeoutError{}
+	})
+	go func() {
+		log.Debug("Start TLS handshake")
+		errChannel <- conn.Handshake()
+		log.Debug("TLS handshake ended")
+	}()
+	return <-errChannel
+}
+
 // address returns the address of the server to send logs to.
 func (cm *ConnectionManager) address() string {
 	return net.JoinHostPort(cm.endpoint.Host, strconv.Itoa(cm.endpoint.Port))
@@ -129,7 +146,7 @@ func (cm *ConnectionManager) address() string {
 // CloseConnection closes a connection on the client side
 func (cm *ConnectionManager) CloseConnection(conn net.Conn) {
 	conn.Close()
-	log.Info("Connection closed")
+	log.Debug("Connection closed")
 }
 
 // handleServerClose lets the connection manager detect when a connection

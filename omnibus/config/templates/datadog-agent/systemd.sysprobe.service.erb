@@ -1,6 +1,10 @@
 [Unit]
-Description="Datadog System Probe"
-After=network.target
+Description=Datadog System Probe
+Requires=sys-kernel-debug.mount
+Before=datadog-agent.service
+After=network.target sys-kernel-debug.mount
+BindsTo=datadog-agent.service
+ConditionPathExists=<%= etc_dir %>/system-probe.yaml
 
 [Service]
 Type=simple
@@ -11,3 +15,6 @@ ExecStart=<%= install_dir %>/embedded/bin/system-probe --config=<%= etc_dir %>/s
 # it is also supported to have it here.
 StartLimitInterval=10
 StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,7 +1,7 @@
 // Unless explicitly stated otherwise all files in this repository are licensed
 // under the Apache License Version 2.0.
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
-// Copyright 2016-2019 Datadog, Inc.
+// Copyright 2016-2020 Datadog, Inc.
 
 package flare
 
@@ -18,6 +18,7 @@ import (
 
 	"github.com/DataDog/datadog-agent/pkg/config"
 	"github.com/DataDog/datadog-agent/pkg/util"
+	httputils "github.com/DataDog/datadog-agent/pkg/util/http"
 	"github.com/DataDog/datadog-agent/pkg/version"
 )
 
@@ -40,7 +41,7 @@ func getFlareReader(multipartBoundary, archivePath, caseID, email, hostname stri
 	bodyReader, bodyWriter := io.Pipe()
 
 	writer := multipart.NewWriter(bodyWriter)
-	writer.SetBoundary(multipartBoundary)
+	writer.SetBoundary(multipartBoundary) //nolint:errcheck
 
 	//Write stuff to the pipe will block until it is read from the other end, so we don't load everything in memory
 	go func() {
@@ -49,32 +50,32 @@ func getFlareReader(multipartBoundary, archivePath, caseID, email, hostname stri
 		defer writer.Close()
 
 		if caseID != "" {
-			writer.WriteField("case_id", caseID)
+			writer.WriteField("case_id", caseID) //nolint:errcheck
 		}
 		if email != "" {
-			writer.WriteField("email", email)
+			writer.WriteField("email", email) //nolint:errcheck
 		}
 
 		p, err := writer.CreateFormFile("flare_file", filepath.Base(archivePath))
 		if err != nil {
-			bodyWriter.CloseWithError(err)
+			bodyWriter.CloseWithError(err) //nolint:errcheck
 			return
 		}
 		file, err := os.Open(archivePath)
 		defer file.Close()
 		if err != nil {
-			bodyWriter.CloseWithError(err)
+			bodyWriter.CloseWithError(err) //nolint:errcheck
 			return
 		}
 		_, err = io.Copy(p, file)
 		if err != nil {
-			bodyWriter.CloseWithError(err)
+			bodyWriter.CloseWithError(err) //nolint:errcheck
 			return
 		}
 
-		agentFullVersion, _ := version.New(version.AgentVersion, version.Commit)
-		writer.WriteField("agent_version", agentFullVersion.String())
-		writer.WriteField("hostname", hostname)
+		agentFullVersion, _ := version.Agent()
+		writer.WriteField("agent_version", agentFullVersion.String()) //nolint:errcheck
+		writer.WriteField("hostname", hostname)                       //nolint:errcheck
 
 	}()
 
@@ -126,12 +127,28 @@ func analyzeResponse(r *http.Response, err error) (string, error) {
 	if err != nil {
 		return response, err
 	}
+	if r.StatusCode == http.StatusForbidden {
+		apiKey := config.Datadog.GetString("api_key")
+		var errStr string
+
+		if len(apiKey) == 0 {
+			errStr = "API key is missing"
+		} else {
+			if len(apiKey) > 5 {
+				apiKey = apiKey[len(apiKey)-5:]
+			}
+			errStr = fmt.Sprintf("Make sure your API key is valid. API Key ending with: %v", apiKey)
+		}
+
+		return response, fmt.Errorf("HTTP 403 Forbidden: %s", errStr)
+	}
+
 	b, _ := ioutil.ReadAll(r.Body)
 	var res = flareResponse{}
 	err = json.Unmarshal(b, &res)
 	if err != nil {
-		response = fmt.Sprintf("An unknown error has occurred - Please contact support by email.")
-		return response, err
+		response = fmt.Sprintf("Error: could not deserialize response body -- Please contact support by email.")
+		return response, fmt.Errorf("%v\nServer returned:\n%s", err, string(b)[:150])
 	}
 
 	if res.Error != "" {
@@ -144,7 +161,7 @@ func analyzeResponse(r *http.Response, err error) (string, error) {
 }
 
 func mkHTTPClient() *http.Client {
-	transport := util.CreateHTTPTransport()
+	transport := httputils.CreateHTTPTransport()
 
 	client := &http.Client{
 		Transport: transport,

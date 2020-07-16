@@ -1,7 +1,7 @@
 // Unless explicitly stated otherwise all files in this repository are licensed
 // under the Apache License Version 2.0.
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
-// Copyright 2016-2019 Datadog, Inc.
+// Copyright 2016-2020 Datadog, Inc.
 
 package status
 
@@ -37,17 +37,19 @@ type Integration struct {
 // Status provides some information about logs-agent.
 type Status struct {
 	IsRunning     bool             `json:"is_running"`
+	Endpoints     []string         `json:"endpoints"`
 	StatusMetrics map[string]int64 `json:"metrics"`
 	Integrations  []Integration    `json:"integrations"`
 	Errors        []string         `json:"errors"`
 	Warnings      []string         `json:"warnings"`
+	UseHTTP       bool             `json:"use_http"`
 }
 
 // Init instantiates the builder that builds the status on the fly.
-func Init(isRunning *int32, sources *config.LogSources, logExpVars *expvar.Map) {
+func Init(isRunning *int32, endpoints *config.Endpoints, sources *config.LogSources, logExpVars *expvar.Map) {
 	warnings = config.NewMessages()
 	errors = config.NewMessages()
-	builder = NewBuilder(isRunning, sources, warnings, errors, logExpVars)
+	builder = NewBuilder(isRunning, endpoints, sources, warnings, errors, logExpVars)
 }
 
 // Clear clears the status which means it needs to be initialized again to be used.

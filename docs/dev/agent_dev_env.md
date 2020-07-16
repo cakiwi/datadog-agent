@@ -2,22 +2,26 @@
 
 ## Python
 
-The Agent embeds a full-fledged CPython interpreter so it requires the development
-files to be available in the dev env.
+The Agent embeds a full-fledged CPython interpreter so it requires the
+development files to be available in the dev env. The Agent can embed Python2
+and/or Python3, you will need development files for all versions you want to
+support.
 
-If you're on OSX/macOS, installing Python 2.7 with [Homebrew](https://brew.sh) will
-bring along all the development files needed:
+If you're on OSX/macOS, installing Python 2.7 and/or 3.8 with [Homebrew](https://brew.sh)
+brings along all the development files needed:
 ```
 brew install python@2
+brew install python@3
 ```
 
 On Linux, depending on the distribution, you might need to explicitly install
 the development files, for example on Ubuntu:
 ```
 sudo apt-get install python2.7-dev
+sudo apt-get install python2.3-dev
 ```
 
-On Windows, install Python 2.7 via the [official installer](https://www.python.org/downloads/).
+On Windows, install Python 2.7 and/or 3.8 via the [official installer](https://www.python.org/downloads/).
 
 ### Additional Windows Tools
 You will also need the Visual Studio for [Visual Studio for Python installer](http://aka.ms/vcpython27)
@@ -77,17 +81,7 @@ additional tool it might need.
 
 ## Installing dependencies
 
-From the root of `datadog-agent`, run `invoke deps`. This will:
-
-- Use `go` to install the necessary dependencies
-- Use `git` to clone [integrations-core][integrations-core]
-- Use `pip` to install [datadog_checks_base][datadog_checks_base]
-
-If you already installed [datadog_checks_base][datadog_checks_base] in your desired
-Python, you can do `invoke deps --no-checks` to prevent cloning and pip install. If
-you are already doing development on [integrations-core][integrations-core], you
-can specify a path to [integrations-core][integrations-core] using the `--core-dir`
-option or `DD_CORE_DIR` environment variable to omit just the cloning step.
+From the root of `datadog-agent`, run `invoke deps`. This uses `go` to install the necessary dependencies.
 
 ## System or Embedded?
 
@@ -160,3 +154,31 @@ dev environment.
 [agent-omnibus]: agent_omnibus.md
 [integrations-core]: https://github.com/DataDog/integrations-core
 [datadog_checks_base]: https://github.com/DataDog/integrations-core/tree/master/datadog_checks_base
+
+## Doxygen
+
+We use [Doxygen](http://www.doxygen.nl/) to generate the documentation for the `rtloader` part of the Agent.
+
+To generate it (using the `invoke rtloader.generate-doc` command), you'll need to have Doxygen installed on your system and available in your `$PATH`. You can compile and install Doxygen from source with the instructions available [here](http://www.doxygen.nl/manual/install.html).
+Alternatively, you can use already-compiled Doxygen binaries from [here](http://www.doxygen.nl/download.html).
+
+To get the dependency graphs, you may also need to install the `dot` executable from [graphviz](http://www.graphviz.org/) and add it to your `$PATH`.
+
+## Pre-commit hooks
+
+It is optional but recommended to install `pre-commit` to run a number of checks done by the CI locally.
+To install it, run:
+
+```sh
+pip install pre-commit
+pre-commit install
+```
+
+The `shellcheck` pre-commit hook requires having the `shellcheck` binary installed and in your `$PATH`.
+To install it, run:
+
+```sh
+inv install-shellcheck --destination <path>
+```
+
+(by default, the shellcheck binary is installed in `/usr/local/bin`).

@@ -1,7 +1,7 @@
 // Unless explicitly stated otherwise all files in this repository are licensed
 // under the Apache License Version 2.0.
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
-// Copyright 2016-2019 Datadog, Inc.
+// Copyright 2016-2020 Datadog, Inc.
 
 package flare
 
@@ -64,8 +64,8 @@ func (f *RedactingWriter) WriteFromFile(filePath string) (int, error) {
 		return 0, err
 	}
 
-	f.Truncate(0)
-	f.target.Seek(0, 0) // offset, whence: 0 relative to start of file
+	f.Truncate(0)       //nolint:errcheck
+	f.target.Seek(0, 0) //nolint:errcheck // offset, whence: 0 relative to start of file
 	return f.Write(data)
 }
 

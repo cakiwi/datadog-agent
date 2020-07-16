@@ -1,7 +1,7 @@
 // Unless explicitly stated otherwise all files in this repository are licensed
 // under the Apache License Version 2.0.
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
-// Copyright 2019 Datadog, Inc.
+// Copyright 2016-2020 Datadog, Inc.
 
 package config
 
@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"testing"
 
+	seelogCfg "github.com/DataDog/datadog-agent/pkg/config/seelog"
 	"github.com/cihub/seelog"
 	"github.com/stretchr/testify/assert"
 )
@@ -25,6 +26,19 @@ func TestExtractShortPathFromFullPath(t *testing.T) {
 	assert.Equal(t, "main.go", extractShortPathFromFullPath("main.go"))
 	// process agent
 	assert.Equal(t, "cmd/agent/collector.go", extractShortPathFromFullPath("/home/jenkins/workspace/process-agent-build-ddagent/go/src/github.com/DataDog/datadog-process-agent/cmd/agent/collector.go"))
+}
+
+func TestSeelogConfig(t *testing.T) {
+	cfg := seelogCfg.NewSeelogConfig("TEST", "off", "common", "", "", false)
+	cfg.EnableConsoleLog(true)
+	cfg.EnableFileLogging("/dev/null", 123, 456)
+
+	seelogConfigStr, err := cfg.Render()
+	assert.Nil(t, err)
+
+	logger, err := seelog.LoggerFromConfigAsString(seelogConfigStr)
+	assert.Nil(t, err)
+	assert.NotNil(t, logger)
 }
 
 func benchmarkLogFormat(logFormat string, b *testing.B) {

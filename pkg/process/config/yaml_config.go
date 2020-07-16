@@ -12,10 +12,11 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/DataDog/datadog-agent/pkg/config"
-	ddutil "github.com/DataDog/datadog-agent/pkg/util"
-	"github.com/DataDog/datadog-agent/pkg/util/log"
-
 	"github.com/DataDog/datadog-agent/pkg/process/util"
+	"github.com/DataDog/datadog-agent/pkg/process/util/api"
+	httputils "github.com/DataDog/datadog-agent/pkg/util/http"
+	"github.com/DataDog/datadog-agent/pkg/util/kubernetes/clustername"
+	"github.com/DataDog/datadog-agent/pkg/util/log"
 )
 
 const (
@@ -36,17 +37,26 @@ func (a *AgentConfig) loadSysProbeYamlConfig(path string) error {
 		return err
 	}
 
-	a.EnableLocalSystemProbe = config.Datadog.GetBool(key(spNS, "use_local_system_probe"))
-
 	// Whether agent should disable collection for TCP, UDP, or IPv6 connection type respectively
 	a.DisableTCPTracing = config.Datadog.GetBool(key(spNS, "disable_tcp"))
 	a.DisableUDPTracing = config.Datadog.GetBool(key(spNS, "disable_udp"))
 	a.DisableIPv6Tracing = config.Datadog.GetBool(key(spNS, "disable_ipv6"))
+	if config.Datadog.IsSet(key(spNS, "disable_dns_inspection")) {
+		a.DisableDNSInspection = config.Datadog.GetBool(key(spNS, "disable_dns_inspection"))
+	}
 
 	a.CollectLocalDNS = config.Datadog.GetBool(key(spNS, "collect_local_dns"))
+	a.CollectDNSStats = config.Datadog.GetBool(key(spNS, "collect_dns_stats"))
+	if config.Datadog.IsSet(key(spNS, "dns_timeout_in_s")) {
+		a.DNSTimeout = config.Datadog.GetDuration(key(spNS, "dns_timeout_in_s")) * time.Second
+	}
 
 	if config.Datadog.GetBool(key(spNS, "enabled")) {
 		a.EnabledChecks = append(a.EnabledChecks, "connections")
+		if !a.Enabled {
+			log.Info("enabling process-agent for connections check as the system-probe is enabled")
+			a.Enabled = true
+		}
 		a.EnableSystemProbe = true
 	}
 
@@ -57,14 +67,27 @@ func (a *AgentConfig) loadSysProbeYamlConfig(path string) error {
 
 	// The full path to the location of the unix socket where connections will be accessed
 	if socketPath := config.Datadog.GetString(key(spNS, "sysprobe_socket")); socketPath != "" {
-		a.SystemProbeSocketPath = socketPath
+		a.SystemProbeAddress = socketPath
 	}
 
 	if config.Datadog.IsSet(key(spNS, "enable_conntrack")) {
 		a.EnableConntrack = config.Datadog.GetBool(key(spNS, "enable_conntrack"))
 	}
-	if s := config.Datadog.GetInt(key(spNS, "conntrack_short_term_buffer_size")); s > 0 {
-		a.ConntrackShortTermBufferSize = s
+	if s := config.Datadog.GetInt(key(spNS, "conntrack_max_state_size")); s > 0 {
+		a.ConntrackMaxStateSize = s
+	}
+	if config.Datadog.IsSet(key(spNS, "conntrack_rate_limit")) {
+		a.ConntrackRateLimit = config.Datadog.GetInt(key(spNS, "conntrack_rate_limit"))
+	}
+
+	// When reading kernel structs at different offsets, don't go over the threshold
+	// This defaults to 400 and has a max of 3000. These are arbitrary choices to avoid infinite loops.
+	if th := config.Datadog.GetInt(key(spNS, "offset_guess_threshold")); th > 0 {
+		if th < maxOffsetThreshold {
+			a.OffsetGuessThreshold = uint64(th)
+		} else {
+			log.Warn("offset_guess_threshold exceeds maximum of 3000. Setting it to the default of 400")
+		}
 	}
 
 	if logFile := config.Datadog.GetString(key(spNS, "log_file")); logFile != "" {
@@ -82,11 +105,7 @@ func (a *AgentConfig) loadSysProbeYamlConfig(path string) error {
 
 	// The maximum number of connections the tracer can track
 	if mtc := config.Datadog.GetInt64(key(spNS, "max_tracked_connections")); mtc > 0 {
-		if mtc <= maxMaxTrackedConnections {
-			a.MaxTrackedConnections = uint(mtc)
-		} else {
-			log.Warnf("Overriding the configured max tracked connections limit because it exceeds maximum 65536, got: %v", mtc)
-		}
+		a.MaxTrackedConnections = uint(mtc)
 	}
 
 	// MaxClosedConnectionsBuffered represents the maximum number of closed connections we'll buffer in memory. These closed connections
@@ -105,6 +124,10 @@ func (a *AgentConfig) loadSysProbeYamlConfig(path string) error {
 		}
 	}
 
+	if ccs := config.Datadog.GetInt(key(spNS, "closed_channel_size")); ccs > 0 {
+		a.ClosedChannelSize = ccs
+	}
+
 	// Pull additional parameters from the global config file.
 	a.LogLevel = config.Datadog.GetString("log_level")
 	a.StatsdPort = config.Datadog.GetInt("dogstatsd_port")
@@ -114,11 +137,27 @@ func (a *AgentConfig) loadSysProbeYamlConfig(path string) error {
 		a.SystemProbeDebugPort = debugPort
 	}
 
+	if sourceExclude := key(spNS, "source_excludes"); config.Datadog.IsSet(sourceExclude) {
+		a.ExcludedSourceConnections = config.Datadog.GetStringMapStringSlice(sourceExclude)
+	}
+
+	if destinationExclude := key(spNS, "dest_excludes"); config.Datadog.IsSet(destinationExclude) {
+		a.ExcludedDestinationConnections = config.Datadog.GetStringMapStringSlice(destinationExclude)
+	}
+
+	if config.Datadog.GetBool(key(spNS, "enable_tcp_queue_length")) {
+		a.EnabledChecks = append(a.EnabledChecks, "TCP queue length")
+	}
+
+	if config.Datadog.GetBool(key(spNS, "enable_oom_kill")) {
+		a.EnabledChecks = append(a.EnabledChecks, "OOM Kill")
+	}
+
 	return nil
 }
 
-// Process-specific configuration
-func (a *AgentConfig) loadProcessYamlConfig(path string) error {
+// LoadProcessYamlConfig load Process-specific configuration
+func (a *AgentConfig) LoadProcessYamlConfig(path string) error {
 	loadEnvVariables()
 
 	// Resolve any secrets
@@ -130,10 +169,16 @@ func (a *AgentConfig) loadProcessYamlConfig(path string) error {
 	if err != nil {
 		return fmt.Errorf("error parsing process_dd_url: %s", err)
 	}
-
 	a.APIEndpoints[0].Endpoint = URL
+	URL, err = url.Parse(config.GetMainEndpoint("https://orchestrator.", key(ns, "orchestrator_dd_url")))
+	if err != nil {
+		return fmt.Errorf("error parsing orchestrator_dd_url: %s", err)
+	}
+	a.OrchestratorEndpoints[0].Endpoint = URL
+
 	if key := "api_key"; config.Datadog.IsSet(key) {
 		a.APIEndpoints[0].APIKey = config.Datadog.GetString(key)
+		a.OrchestratorEndpoints[0].APIKey = config.Datadog.GetString(key)
 	}
 
 	if config.Datadog.IsSet("hostname") {
@@ -157,7 +202,8 @@ func (a *AgentConfig) loadProcessYamlConfig(path string) error {
 		//   If "true" we will collect containers and processes.
 		//   If "disabled" the agent will be disabled altogether and won't start.
 		enabled := config.Datadog.GetString(k)
-		if ok, err := isAffirmative(enabled); ok {
+		ok, err := isAffirmative(enabled)
+		if ok {
 			a.Enabled, a.EnabledChecks = true, processChecks
 		} else if enabled == "disabled" {
 			a.Enabled = false
@@ -226,6 +272,18 @@ func (a *AgentConfig) loadProcessYamlConfig(path string) error {
 		}
 	}
 
+	if k := key(ns, "process_queue_bytes"); config.Datadog.IsSet(k) {
+		if queueBytes := config.Datadog.GetInt(k); queueBytes > 0 {
+			a.ProcessQueueBytes = queueBytes
+		}
+	}
+
+	if k := key(ns, "pod_queue_bytes"); config.Datadog.IsSet(k) {
+		if queueBytes := config.Datadog.GetInt(k); queueBytes > 0 {
+			a.PodQueueBytes = queueBytes
+		}
+	}
+
 	// The maximum number of processes, or containers per message. Note: Only change if the defaults are causing issues.
 	if k := key(ns, "max_per_message"); config.Datadog.IsSet(k) {
 		if maxPerMessage := config.Datadog.GetInt(k); maxPerMessage <= 0 {
@@ -263,7 +321,7 @@ func (a *AgentConfig) loadProcessYamlConfig(path string) error {
 				return fmt.Errorf("invalid additional endpoint url '%s': %s", endpointURL, err)
 			}
 			for _, k := range apiKeys {
-				a.APIEndpoints = append(a.APIEndpoints, APIEndpoint{
+				a.APIEndpoints = append(a.APIEndpoints, api.Endpoint{
 					APIKey:   k,
 					Endpoint: u,
 				})
@@ -271,10 +329,26 @@ func (a *AgentConfig) loadProcessYamlConfig(path string) error {
 		}
 	}
 
-	// Used to override container source auto-detection.
-	// "docker", "ecs_fargate", "kubelet", etc
-	if containerSource := config.Datadog.GetString(key(ns, "container_source")); containerSource != "" {
-		util.SetContainerSource(containerSource)
+	if k := key(ns, "orchestrator_additional_endpoints"); config.Datadog.IsSet(k) {
+		for endpointURL, apiKeys := range config.Datadog.GetStringMapStringSlice(k) {
+			u, err := URL.Parse(endpointURL)
+			if err != nil {
+				return fmt.Errorf("invalid additional endpoint url '%s': %s", endpointURL, err)
+			}
+			for _, k := range apiKeys {
+				a.OrchestratorEndpoints = append(a.OrchestratorEndpoints, api.Endpoint{
+					APIKey:   k,
+					Endpoint: u,
+				})
+			}
+		}
+	}
+
+	// Used to override container source auto-detection
+	// and to enable multiple collector sources if needed.
+	// "docker", "ecs_fargate", "kubelet", "kubelet docker", etc.
+	if sources := config.Datadog.GetStringSlice(key(ns, "container_source")); len(sources) > 0 {
+		util.SetContainerSources(sources)
 	}
 
 	// Pull additional parameters from the global config file.
@@ -291,7 +365,16 @@ func (a *AgentConfig) loadProcessYamlConfig(path string) error {
 	}
 
 	// Build transport (w/ proxy if needed)
-	a.Transport = ddutil.CreateHTTPTransport()
+	a.Transport = httputils.CreateHTTPTransport()
+
+	// Orchestrator Explorer
+	if config.Datadog.GetBool("orchestrator_explorer.enabled") {
+		a.OrchestrationCollectionEnabled = true
+		// Set clustername
+		if clusterName := clustername.GetClusterName(); clusterName != "" {
+			a.KubeClusterName = clusterName
+		}
+	}
 
 	return nil
 }

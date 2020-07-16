@@ -27,7 +27,10 @@ Processes and Containers Agent (v 0.99.0)
   Docker socket: /var/run/docker.sock
   Number of processes: 84
   Number of containers: 0
-  Queue length: 0
+  Process Queue length: 0
+  Pod Queue length: 0
+  Process Bytes enqueued: 0
+  Pod Bytes enqueued: 0
 
   Logs: /var/log/datadog/process-agent.log
 
@@ -78,7 +81,7 @@ func testServer(t *testing.T) *httptest.Server {
 
 func TestInfo(t *testing.T) {
 	assert := assert.New(t)
-	conf := config.NewDefaultAgentConfig()
+	conf := config.NewDefaultAgentConfig(false)
 	server := testServer(t)
 	assert.NotNil(server)
 	defer server.Close()
@@ -95,7 +98,7 @@ func TestInfo(t *testing.T) {
 
 func TestNotRunning(t *testing.T) {
 	assert := assert.New(t)
-	conf := config.NewDefaultAgentConfig()
+	conf := config.NewDefaultAgentConfig(false)
 	server := testServer(t)
 	assert.NotNil(server)
 	defer server.Close()
@@ -122,7 +125,7 @@ func TestNotRunning(t *testing.T) {
 
 func TestError(t *testing.T) {
 	assert := assert.New(t)
-	conf := config.NewDefaultAgentConfig()
+	conf := config.NewDefaultAgentConfig(false)
 	server := testServer(t)
 	assert.NotNil(server)
 	defer server.Close()

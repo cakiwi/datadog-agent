@@ -1,7 +1,7 @@
 // Unless explicitly stated otherwise all files in this repository are licensed
 // under the Apache License Version 2.0.
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
-// Copyright 2016-2019 Datadog, Inc.
+// Copyright 2016-2020 Datadog, Inc.
 
 package config
 
@@ -13,9 +13,9 @@ import (
 
 	"github.com/DataDog/datadog-agent/pkg/util/log"
 
-	"github.com/DataDog/viper"
 	"github.com/spf13/afero"
 	"github.com/spf13/pflag"
+	"github.com/spf13/viper"
 )
 
 // safeConfig implements Config:
@@ -245,10 +245,10 @@ func (c *safeConfig) SetEnvKeyReplacer(r *strings.Replacer) {
 }
 
 // UnmarshalKey wraps Viper for concurrent access
-func (c *safeConfig) UnmarshalKey(key string, rawVal interface{}) error {
+func (c *safeConfig) UnmarshalKey(key string, rawVal interface{}, opts ...viper.DecoderConfigOption) error {
 	c.Lock()
 	defer c.Unlock()
-	return c.Viper.UnmarshalKey(key, rawVal)
+	return c.Viper.UnmarshalKey(key, rawVal, opts...)
 }
 
 // Unmarshal wraps Viper for concurrent access
@@ -350,7 +350,7 @@ func (c *safeConfig) GetEnvVars() []string {
 // BindEnvAndSetDefault implements the Config interface
 func (c *safeConfig) BindEnvAndSetDefault(key string, val interface{}) {
 	c.SetDefault(key, val)
-	c.BindEnv(key)
+	c.BindEnv(key) //nolint:errcheck
 }
 
 // NewConfig returns a new Config object.

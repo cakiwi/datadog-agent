@@ -1,7 +1,7 @@
 // Unless explicitly stated otherwise all files in this repository are licensed
 // under the Apache License Version 2.0.
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
-// Copyright 2016-2019 Datadog, Inc.
+// Copyright 2016-2020 Datadog, Inc.
 
 // +build containerd
 
@@ -9,24 +9,35 @@ package containers
 
 import (
 	"encoding/json"
+	"runtime"
 	"sort"
 	"testing"
 	"time"
 
-	"github.com/containerd/cgroups"
+	v1 "github.com/containerd/cgroups/stats/v1"
 	"github.com/containerd/containerd/api/types"
 	"github.com/containerd/containerd/containers"
 	"github.com/containerd/typeurl"
-	"github.com/docker/docker/pkg/testutil/assert"
 	prototypes "github.com/gogo/protobuf/types"
+	"github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	"github.com/DataDog/datadog-agent/pkg/aggregator/mocksender"
 	"github.com/DataDog/datadog-agent/pkg/collector/corechecks"
+	"github.com/DataDog/datadog-agent/pkg/config"
 	"github.com/DataDog/datadog-agent/pkg/metrics"
 	containersutil "github.com/DataDog/datadog-agent/pkg/util/containers"
 )
+
+func int64Ptr(v int64) *int64 {
+	return &v
+}
+
+func uint64Ptr(v uint64) *uint64 {
+	return &v
+}
 
 // TestCollectTags checks the collectTags method
 func TestCollectTags(t *testing.T) {
@@ -80,6 +91,7 @@ func TestComputeEvents(t *testing.T) {
 	}
 	mocked := mocksender.NewMockSender(containerdCheck.ID())
 	var err error
+	defer containersutil.ResetSharedFilter()
 	containerdCheck.filters, err = containersutil.GetSharedFilter()
 	require.NoError(t, err)
 
@@ -159,7 +171,7 @@ func TestComputeEvents(t *testing.T) {
 			if len(mocked.Calls) > 0 {
 				res := (mocked.Calls[0].Arguments.Get(0)).(metrics.Event)
 				assert.Contains(t, res.Title, test.expectedTitle)
-				assert.EqualStringSlice(t, res.Tags, test.expectedTags)
+				assert.ElementsMatch(t, res.Tags, test.expectedTags)
 			}
 			mocked.AssertNumberOfCalls(t, "Event", test.numberEvents)
 			mocked.ResetCalls()
@@ -167,7 +179,80 @@ func TestComputeEvents(t *testing.T) {
 	}
 }
 
-// TestComputeMem checks the computeMem methos
+func TestComputeCPU(t *testing.T) {
+	containerdCheck := &ContainerdCheck{
+		instance:  &ContainerdConfig{},
+		CheckBase: corechecks.NewCheckBase("containerd"),
+	}
+	mocked := mocksender.NewMockSender(containerdCheck.ID())
+	mocked.SetupAcceptAll()
+	testTime := time.Now()
+
+	tests := []struct {
+		name        string
+		cpu         *v1.CPUStat
+		cpuLimit    *specs.LinuxCPU
+		startTime   time.Time
+		currentTime time.Time
+		expected    map[string]float64
+	}{
+		{
+			name: "CPU Usage, no limits, no throttling",
+			cpu: &v1.CPUStat{
+				Usage: &v1.CPUUsage{
+					Kernel: 10,
+					Total:  40,
+					User:   30,
+				},
+			},
+			startTime:   testTime.Add(-10 * time.Second),
+			currentTime: testTime,
+			expected: map[string]float64{
+				"containerd.cpu.system": 10,
+				"containerd.cpu.total":  40,
+				"containerd.cpu.user":   30,
+				"containerd.cpu.limit":  1e10 * float64(runtime.NumCPU()),
+			},
+		},
+		{
+			name: "CPU Usage, with limits, with throttling",
+			cpu: &v1.CPUStat{
+				Usage: &v1.CPUUsage{
+					Kernel: 10,
+					Total:  40,
+					User:   30,
+				},
+				Throttling: &v1.Throttle{
+					ThrottledPeriods: 1,
+					ThrottledTime:    2,
+				},
+			},
+			cpuLimit: &specs.LinuxCPU{
+				Period: uint64Ptr(100),
+				Quota:  int64Ptr(200),
+			},
+			startTime:   testTime.Add(-10 * time.Second),
+			currentTime: testTime,
+			expected: map[string]float64{
+				"containerd.cpu.system":            10,
+				"containerd.cpu.total":             40,
+				"containerd.cpu.user":              30,
+				"containerd.cpu.limit":             2e10,
+				"containerd.cpu.throttled.periods": 1,
+				"containerd.cpu.throttled.time":    2,
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			computeCPU(mocked, test.cpu, test.cpuLimit, test.startTime, test.currentTime, []string{})
+			for name, val := range test.expected {
+				mocked.AssertMetric(t, "Rate", name, val, "", []string{})
+			}
+		})
+	}
+}
+
 func TestComputeMem(t *testing.T) {
 	containerdCheck := &ContainerdCheck{
 		instance:  &ContainerdConfig{},
@@ -178,7 +263,7 @@ func TestComputeMem(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		mem      *cgroups.MemoryStat
+		mem      *v1.MemoryStat
 		expected map[string]float64
 	}{
 		{
@@ -188,19 +273,19 @@ func TestComputeMem(t *testing.T) {
 		},
 		{
 			name:     "nothing",
-			mem:      &cgroups.MemoryStat{},
+			mem:      &v1.MemoryStat{},
 			expected: map[string]float64{},
 		},
 		{
 			name: "missing one of the MemoryEntries, missing entries in the others",
-			mem: &cgroups.MemoryStat{
-				Usage: &cgroups.MemoryEntry{
+			mem: &v1.MemoryStat{
+				Usage: &v1.MemoryEntry{
 					Usage: 1,
 				},
-				Kernel: &cgroups.MemoryEntry{
+				Kernel: &v1.MemoryEntry{
 					Max: 2,
 				},
-				Swap: &cgroups.MemoryEntry{
+				Swap: &v1.MemoryEntry{
 					Limit: 3,
 				},
 			},
@@ -212,20 +297,20 @@ func TestComputeMem(t *testing.T) {
 		},
 		{
 			name: "full MemoryEntries, some regular metrics",
-			mem: &cgroups.MemoryStat{
-				Usage: &cgroups.MemoryEntry{
+			mem: &v1.MemoryStat{
+				Usage: &v1.MemoryEntry{
 					Usage:   1,
 					Max:     2,
 					Limit:   3,
 					Failcnt: 0,
 				},
-				Kernel: &cgroups.MemoryEntry{
+				Kernel: &v1.MemoryEntry{
 					Usage:   1,
 					Max:     2,
 					Limit:   3,
 					Failcnt: 0,
 				},
-				Swap: &cgroups.MemoryEntry{
+				Swap: &v1.MemoryEntry{
 					Usage:   1,
 					Max:     2,
 					Limit:   3,
@@ -263,38 +348,80 @@ func TestComputeMem(t *testing.T) {
 	}
 }
 
-// TestConvertTaskToMetrics checks the convertTasktoMetrics
-func TestConvertTaskToMetrics(t *testing.T) {
-	typeurl.Register(&cgroups.Metrics{}, "io.containerd.cgroups.v1.Metrics") // Need to register the type to be used in UnmarshalAny later on.
+func TestComputeUptime(t *testing.T) {
+	containerdCheck := &ContainerdCheck{
+		instance:  &ContainerdConfig{},
+		CheckBase: corechecks.NewCheckBase("containerd"),
+	}
+	mocked := mocksender.NewMockSender(containerdCheck.ID())
+	mocked.SetupAcceptAll()
+
+	currentTime := time.Now()
 
 	tests := []struct {
 		name     string
-		typeUrl  string
-		values   cgroups.Metrics
+		ctn      containers.Container
+		expected map[string]float64
+	}{
+		{
+			name: "Normal check",
+			ctn: containers.Container{
+				CreatedAt: currentTime.Add(-60 * time.Second),
+			},
+			expected: map[string]float64{
+				"containerd.uptime": 60.0,
+			},
+		},
+		{
+			name: "Created in the future",
+			ctn: containers.Container{
+				CreatedAt: currentTime.Add(60 * time.Second),
+			},
+			expected: map[string]float64{},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			computeUptime(mocked, test.ctn, currentTime, []string{})
+			for name, val := range test.expected {
+				mocked.AssertMetric(t, "Gauge", name, val, "", []string{})
+			}
+		})
+	}
+}
+
+// TestConvertTaskToMetrics checks the convertTasktoMetrics
+func TestConvertTaskToMetrics(t *testing.T) {
+	typeurl.Register(&v1.Metrics{}, "io.containerd.cgroups.v1.Metrics") // Need to register the type to be used in UnmarshalAny later on.
+
+	tests := []struct {
+		name     string
+		typeURL  string
+		values   v1.Metrics
 		error    string
-		expected *cgroups.Metrics
+		expected *v1.Metrics
 	}{
 		{
 			"unregistered type",
 			"io.containerd.cgroups.v1.Doge",
-			cgroups.Metrics{},
+			v1.Metrics{},
 			"type with url io.containerd.cgroups.v1.Doge: not found",
 			nil,
 		},
 		{
 			"missing values",
 			"io.containerd.cgroups.v1.Metrics",
-			cgroups.Metrics{},
+			v1.Metrics{},
 			"",
-			&cgroups.Metrics{},
+			&v1.Metrics{},
 		},
 		{
 			"fully functional",
 			"io.containerd.cgroups.v1.Metrics",
-			cgroups.Metrics{Memory: &cgroups.MemoryStat{Cache: 100}},
+			v1.Metrics{Memory: &v1.MemoryStat{Cache: 100}},
 			"",
-			&cgroups.Metrics{
-				Memory: &cgroups.MemoryStat{
+			&v1.Metrics{
+				Memory: &v1.MemoryStat{
 					Cache: 100,
 				},
 			},
@@ -302,11 +429,11 @@ func TestConvertTaskToMetrics(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			typeUrl := test.typeUrl
+			typeURL := test.typeURL
 			jsonValue, _ := json.Marshal(test.values)
 			metric := &types.Metric{
 				Data: &prototypes.Any{
-					TypeUrl: typeUrl,
+					TypeUrl: typeURL,
 					Value:   jsonValue,
 				},
 			}
@@ -327,6 +454,9 @@ func TestIsExcluded(t *testing.T) {
 	}
 	var err error
 	// GetShareFilter gives us the OOB exclusion of pause container images from most supported platforms
+	config.Datadog.Set("container_exclude", "kube_namespace:shouldexclude")
+	defer config.Datadog.SetDefault("container_exclude", "")
+	defer containersutil.ResetSharedFilter()
 	containerdCheck.filters, err = containersutil.GetSharedFilter()
 	require.NoError(t, err)
 	c := containers.Container{
@@ -342,4 +472,13 @@ func TestIsExcluded(t *testing.T) {
 	// kubernetes/pawz although not an available image (yet ?) is not ignored
 	isEc = isExcluded(c, containerdCheck.filters)
 	require.False(t, isEc)
+
+	// Namespace based filtering
+	c = containers.Container{
+		Image: "kubernetes/pawz",
+		Labels: map[string]string{
+			"io.kubernetes.pod.namespace": "shouldexclude",
+		},
+	}
+	require.True(t, isExcluded(c, containerdCheck.filters))
 }

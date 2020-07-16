@@ -1,7 +1,7 @@
 // Unless explicitly stated otherwise all files in this repository are licensed
 // under the Apache License Version 2.0.
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
-// Copyright 2016-2019 Datadog, Inc.
+// Copyright 2016-2020 Datadog, Inc.
 
 // +build python
 
@@ -14,19 +14,19 @@ import (
 )
 
 /*
-#include <datadog_agent_six.h>
-#cgo !windows LDFLAGS: -ldatadog-agent-six -ldl
-#cgo windows LDFLAGS: -ldatadog-agent-six -lstdc++ -static
+#include <datadog_agent_rtloader.h>
+#cgo !windows LDFLAGS: -ldatadog-agent-rtloader -ldl
+#cgo windows LDFLAGS: -ldatadog-agent-rtloader -lstdc++ -static
 */
 import "C"
 
 var filter *containers.Filter
 
 // IsContainerExcluded returns whether a container should be excluded,
-// based on it's name and image name. Exclusion patterns are configured
+// based on it's name, image name and namespace. Exclusion patterns are configured
 // via the global options (ac_include/ac_exclude/exclude_pause_container)
 //export IsContainerExcluded
-func IsContainerExcluded(name, image *C.char) C.int {
+func IsContainerExcluded(name, image, namespace *C.char) C.int {
 	// If init failed, fallback to False
 	if filter == nil {
 		return 0
@@ -34,8 +34,12 @@ func IsContainerExcluded(name, image *C.char) C.int {
 
 	goName := C.GoString(name)
 	goImg := C.GoString(image)
+	goNs := ""
+	if namespace != nil {
+		goNs = C.GoString(namespace)
+	}
 
-	if filter.IsExcluded(goName, goImg) {
+	if filter.IsExcluded(goName, goImg, goNs) {
 		return 1
 	}
 	return 0

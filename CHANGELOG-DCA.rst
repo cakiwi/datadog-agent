@@ -2,6 +2,132 @@
 Release Notes
 =============
 
+.. _Release Notes_1.5.2:
+
+1.5.2
+=====
+
+.. _Release Notes_1.5.2_Prelude:
+
+Prelude
+-------
+
+Released on: 2020-02-11
+
+Minor release on 1.5 branch
+
+Bug Fixed
+------------
+
+- Fix agent commands in DCA (always start listener) (#4870)
+
+.. _Release Notes_1.5.1:
+
+1.5.1
+=====
+
+.. _Release Notes_1.5.1_Prelude:
+
+Prelude
+-------
+
+Released on: 2020-02-06
+
+Minor release on 1.5 branch
+
+Bug Fixed
+------------
+
+- [DCA] fix cluster-agent flare panic (#4838)
+- Remove setcap NET_BIND_SERVICE as we cannot make it work with user namespaces used in the CI (#4846)
+- Add service listener in endpoints to watch for newly annotated services (#4816)
+- Fix typo (#4831)
+
+.. _Release Notes_1.5.0:
+
+1.5.0
+=====
+
+.. _Release Notes_1.5.0_Prelude:
+
+Prelude
+-------
+
+Released on: 2020-01-28
+
+This version contains the changes released with version 7.17.0 of the core agent.
+Please refer to the `CHANGELOG <https://github.com/DataDog/datadog-agent/blob/master/CHANGELOG.rst#7170>`_.
+
+New Features
+------------
+
+- Adding logic to show DCA status for clc (#4738)
+- Introduce Rate Limiting Stats in the /metrics of the Cluster Agent (#4669)
+- MetricServer generates k8s event on HPA
+
+Enhancement Notes
+-----------------
+
+- Add cluster-name tag in host tags (#4558)
+- Add read-secret command in cluster-agent to use as secrets backend (#4639)
+- Adding logic to show DCA status for clc (#4738)
+- Allow dots in cluster names (#4611)
+- Check if CheckMetadata exist before iterating over it in cluster agent status page (#4728)
+- Grant CAP_NET_BIND_SERVICE capability to the cluster_agent (#4439)
+- Ignore invalid cluster names instead of panicking (#4549)
+- Fix eventrecorder init (#4732)
+- Handle NewHandler failure better in setupClusterCheck (#4447)
+- Adding User-Agent to the DCA client
+- Filter non-cluster-checks (#4566)
+
+.. _Release Notes_1.4.0:
+
+1.4.0
+=====
+
+.. _Release Notes_1.4.0_Prelude:
+
+Prelude
+-------
+
+Released on: 2019-11-06
+
+This version contains the changes released with version 6.15.0 of the core agent.
+Please refer to the `CHANGELOG <https://github.com/DataDog/datadog-agent/blob/master/CHANGELOG.rst#6150>`_.
+
+New Features
+------------
+
+- Introducing the Advanced dispatching logic to rebalancing Cluster Level Checks [#4068, #4226, #4344]
+- Enable the Endpoint check logic [#3853, #3704]
+- HTTP proxy support for the external metrics provider #4191
+- Improve External Metrics Provider resiliency [#4285, #3727]
+- Revamp the Kubernetes event collection check [#4259, #4346, #4342, #4337, #4314]
+
+Enhancement Notes
+-----------------
+
+- Update Gopkg.lock with new import #3837
+- Fix kubernetes_apiserver default config file #3854
+- Fix registration of the External Metrics Server's API #4233
+- Fixing status of the Cluster Agent if the External Metrics Provider is not enabled #4277
+- Fix how the endpoints check source is displayed in agent command outputs #4357
+- Fix how we invalidate changed Endpoints config #4363
+- Get Cluster Level Checks runner IPs from headers #4386
+- Fixing output of `agent status` #4352
+
+1.3.2
+=====
+2019-07-09
+
+- Fix Cluster-agent failure with `cluster-agent flare` command.
+
+1.3.1
+=====
+2019-06-19
+
+- Fix "Kube Services" service: `kube service` tags attached to pod are not consistent.
+
 .. _Release Notes_1.3.0:
 
 1.3.0

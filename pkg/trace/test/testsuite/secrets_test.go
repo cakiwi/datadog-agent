@@ -1,3 +1,8 @@
+// Unless explicitly stated otherwise all files in this repository are licensed
+// under the Apache License Version 2.0.
+// This product includes software developed at Datadog (https://www.datadoghq.com/).
+// Copyright 2016-2020 Datadog, Inc.
+
 package testsuite
 
 import (
@@ -7,16 +12,20 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 // TestSecrets ensures that secrets placed in environment variables get loaded.
 func TestSecrets(t *testing.T) {
-	tmpDir := os.TempDir()
+	tmpDir, err := ioutil.TempDir("", "trace-agent-test-*")
+	if err != nil {
+		t.Skip(err.Error())
+	}
 
 	// install trace-agent with -tags=secrets
-	binTraceAgent := filepath.Join(tmpDir, "/tmp/trace-agent.test")
+	binTraceAgent := filepath.Join(tmpDir, "trace-agent")
 	cmd := exec.Command("go", "build", "-o", binTraceAgent, "-tags=secrets", "github.com/DataDog/datadog-agent/cmd/trace-agent")
 	cmd.Stdout = ioutil.Discard
 	if err := cmd.Run(); err != nil {
@@ -37,11 +46,12 @@ func TestSecrets(t *testing.T) {
 	}
 
 	// run the trace-agent
-	var buf bytes.Buffer
-	cmd = exec.Command("/tmp/trace-agent.test")
+	var buf safeWriter
+	cmd = exec.Command(binTraceAgent)
 	cmd.Env = []string{
 		"DD_SECRET_BACKEND_COMMAND=" + binSecrets,
 		"DD_HOSTNAME=ENC[secret1]",
+		"DD_API_KEY=123",
 	}
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
@@ -69,4 +79,23 @@ func TestSecrets(t *testing.T) {
 			time.Sleep(5 * time.Millisecond)
 		}
 	}
+}
+
+// safeWriter is an io.Writer implementation which allows the retrieval of what was written
+// to it, as a string. It is safe for concurrent use.
+type safeWriter struct {
+	mu  sync.RWMutex
+	buf bytes.Buffer
+}
+
+func (sb *safeWriter) Write(p []byte) (n int, err error) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.Write(p)
+}
+
+func (sb *safeWriter) String() string {
+	sb.mu.RLock()
+	defer sb.mu.RUnlock()
+	return sb.buf.String()
 }

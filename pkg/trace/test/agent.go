@@ -1,3 +1,8 @@
+// Unless explicitly stated otherwise all files in this repository are licensed
+// under the Apache License Version 2.0.
+// This product includes software developed at Datadog (https://www.datadoghq.com/).
+// Copyright 2016-2020 Datadog, Inc.
+
 package test
 
 import (
@@ -13,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/DataDog/viper"
+	"github.com/spf13/viper"
 	yaml "gopkg.in/yaml.v2"
 )
 

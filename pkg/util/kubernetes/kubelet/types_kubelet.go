@@ -1,13 +1,15 @@
 // Unless explicitly stated otherwise all files in this repository are licensed
 // under the Apache License Version 2.0.
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
-// Copyright 2016-2019 Datadog, Inc.
+// Copyright 2016-2020 Datadog, Inc.
 
 // +build kubelet
 
 package kubelet
 
-import "time"
+import (
+	"time"
+)
 
 // Pod contains fields for unmarshalling a Pod
 type Pod struct {
@@ -44,6 +46,7 @@ type Spec struct {
 	HostNetwork bool            `json:"hostNetwork,omitempty"`
 	NodeName    string          `json:"nodeName,omitempty"`
 	Containers  []ContainerSpec `json:"containers,omitempty"`
+	Volumes     []VolumeSpec    `json:"volumes,omitempty"`
 }
 
 // ContainerSpec contains fields for unmarshalling a Pod.Spec.Containers
@@ -52,6 +55,7 @@ type ContainerSpec struct {
 	Image          string              `json:"image,omitempty"`
 	Ports          []ContainerPortSpec `json:"ports,omitempty"`
 	ReadinessProbe *ContainerProbe     `json:"readinessProbe,omitempty"`
+	Env            []EnvVar            `json:"env,omitempty"`
 }
 
 // ContainerSpec contains fields for unmarshalling a Pod.Spec.Containers.Ports
@@ -65,6 +69,26 @@ type ContainerPortSpec struct {
 // ContainerProbe contains fields for unmarshalling a Pod.Spec.Containers.ReadinessProbe
 type ContainerProbe struct {
 	InitialDelaySeconds int `json:"initialDelaySeconds"`
+}
+
+// EnvVar represents an environment variable present in a Container.
+type EnvVar struct {
+	// Name of the environment variable. Must be a C_IDENTIFIER.
+	Name string `json:"name"`
+	// Value of the environment variable.
+	Value string `json:"value,omitempty"`
+}
+
+// VolumeSpec contains fields for unmarshalling a Pod.Spec.Volumes
+type VolumeSpec struct {
+	Name string `json:"name"`
+	// Only try to retrieve persistent volume claim to tag statefulsets
+	PersistentVolumeClaim *PersistentVolumeClaimSpec `json:"persistentVolumeClaim,omitempty"`
+}
+
+// PersistentVolumeClaimSpec contains fields for unmarshalling a Pod.Spec.Volumes.PersistentVolumeClaim
+type PersistentVolumeClaimSpec struct {
+	ClaimName string `json:"claimName"`
 }
 
 // Status contains fields for unmarshalling a Pod.Status

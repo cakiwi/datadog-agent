@@ -6,9 +6,9 @@
 [![GoDoc](https://godoc.org/github.com/DataDog/datadog-agent?status.svg)](https://godoc.org/github.com/DataDog/datadog-agent)
 [![Go Report Card](https://goreportcard.com/badge/github.com/DataDog/datadog-agent)](https://goreportcard.com/report/github.com/DataDog/datadog-agent)
 
-The present repository contains the source code of the Datadog Agent version 6. Please refer to the [Agent user documentation](docs/agent) for information about differences between Agent 5 and Agent 6. Additionally, we provide a list of prepackaged binaries for an easy install process [here](https://app.datadoghq.com/account/settings#agent)
+The present repository contains the source code of the Datadog Agent version 7 and version 6. Please refer to the [Agent user documentation](docs/agent) for information about differences between Agent v5, Agent v6 and Agent v7. Additionally, we provide a list of prepackaged binaries for an easy install process [here](https://app.datadoghq.com/account/settings#agent)
 
-**Note:** the source code of Datadog Agent 5 is located in the
+**Note:** the source code of Datadog Agent v5 is located in the
 [dd-agent](https://github.com/DataDog/dd-agent) repository.
 
 ## Documentation
@@ -19,11 +19,11 @@ and development, is located under [the docs directory](docs) of the present repo
 ## Getting started
 
 To build the Agent you need:
- * [Go](https://golang.org/doc/install) 1.11.5 or later. You'll also need to set your `$GOPATH` and have `$GOPATH/bin` in your path.
- * Python 2.7 or 3.x along with development libraries.
+ * [Go](https://golang.org/doc/install) 1.13 or later. You'll also need to set your `$GOPATH` and have `$GOPATH/bin` in your path.
+ * Python 2.7 or 3.7+ along with development libraries.
  * Python dependencies. You may install these with `pip install -r requirements.txt`
    This will also pull in [Invoke](http://www.pyinvoke.org) if not yet installed.
- * CMake version 3.12 or later
+ * CMake version 3.12 or later and a C++ compiler
 
 **Note:** you may want to use a python virtual environment to avoid polluting your
       system-wide python environment with the agent build/dev dependencies. You can
@@ -46,21 +46,37 @@ To start working on the Agent, you can build the `master` branch:
 2. cd into the project folder: `cd $GOPATH/src/github.com/DataDog/datadog-agent`.
 3. Install project's dependencies: `invoke deps`.
    Make sure that `$GOPATH/bin` is in your `$PATH` otherwise this step might fail.
-4. Build the `six` dependency with `invoke six.build && invoke six.install`. You will need CMake installed and a C++ compiler for this to work.
-5. Build the agent with `invoke agent.build --build-exclude=systemd`
+4. Create a development `datadog.yaml` configuration file in `dev/dist/datadog.yaml`, containing a valid API key: `api_key: <API_KEY>`
+5. Build the agent with `invoke agent.build --build-exclude=systemd`.
+   By default, the Agent will be built to use Python 3 but you can select which Python version you want to use:
+   - `invoke agent.build --python-runtimes 2` for Python2 only
+   - `invoke agent.build --python-runtimes 3` for Python3 only
+   - `invoke agent.build --python-runtimes 2,3` for both Python2 and Python3
+  You can specify a custom Python location for the agent (useful when using
+   virtualenvs): `invoke agent.build
+   --python-runtimes 2,3
+   --python-home-2=$GOPATH/src/github.com/DataDog/datadog-agent/venv2
+   --python-home-3=$GOPATH/src/github.com/DataDog/datadog-agent/venv3`.
+  Running `invoke agent.build`:
+    * Discards any changes done in `bin/agent/dist`.
+    * Builds the Agent and writes the binary to `bin/agent/agent`.
+    * Copies files from `dev/dist` to `bin/agent/dist`. See `https://github.com/DataDog/datadog-agent/blob/master/dev/dist/README.md` for more information.
+  If you built an older version of the agent, you may have the error `make: *** No targets specified and no makefile found.  Stop.`.
+  To solve the issue, you should remove `CMakeCache.txt` from `rtloader` folder with `rm rtloader/CMakeCache.txt`.
 
-Please refer to the [Agent Developer Guide](docs/dev/README.md) for more details.
+
+
+Please refer to the [Agent Developer Guide](docs/dev/README.md) for more details. For instructions
+on setting up a windows dev environment, refer to [Windows Dev Env](devenv).
 
 ## Run
 
-To start the agent type `agent run` from the `bin/agent` folder, it will take
-care of adjusting paths and run the binary in foreground.
+You can run the agent with:
+```
+./bin/agent/agent run -c bin/agent/dist/datadog.yaml
+```
 
-You need to provide a valid API key. You can either use the config file or
-overwrite it with the environment variable like:
-```
-DD_API_KEY=12345678990 ./bin/agent/agent run -c bin/agent/dist/datadog.yaml
-```
+The file `bin/agent/dist/datadog.yaml` is copied from `dev/dist/datadog.yaml` by `invoke agent.build` and must contain a valid api key.
 
 ## Contributing code
 

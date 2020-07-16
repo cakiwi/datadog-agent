@@ -1,7 +1,7 @@
 // Unless explicitly stated otherwise all files in this repository are licensed
 // under the Apache License Version 2.0.
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
-// Copyright 2016-2019 Datadog, Inc.
+// Copyright 2016-2020 Datadog, Inc.
 
 // +build python
 // +build !windows
@@ -9,13 +9,15 @@
 package python
 
 import (
+	"github.com/DataDog/datadog-agent/pkg/util/log"
+
 	"github.com/DataDog/datadog-agent/pkg/config"
 )
 
 /*
-#cgo !windows LDFLAGS: -ldatadog-agent-six -ldl
+#cgo !windows LDFLAGS: -ldatadog-agent-rtloader -ldl
 
-#include <datadog_agent_six.h>
+#include <datadog_agent_rtloader.h>
 */
 import "C"
 
@@ -28,7 +30,10 @@ func initializePlatform() error {
 		if config.Datadog.GetBool("c_core_dump") {
 			cCoreDump = 1
 		}
-		C.handle_crashes(six, C.int(cCoreDump))
+
+		if C.handle_crashes(rtloader, C.int(cCoreDump)) == 0 {
+			log.Errorf("Unable to install crash handler, C-land stacktraces and dumps will be unavailable")
+		}
 	}
 
 	return nil

@@ -1,16 +1,15 @@
-// +build linux
-
 package checks
 
 import (
 	"runtime"
 	"time"
 
-	"github.com/DataDog/datadog-agent/pkg/util/containers"
-
+	model "github.com/DataDog/agent-payload/process"
 	"github.com/DataDog/datadog-agent/pkg/process/config"
-	"github.com/DataDog/datadog-agent/pkg/process/model"
 	"github.com/DataDog/datadog-agent/pkg/process/util"
+	"github.com/DataDog/datadog-agent/pkg/util/containers"
+	containercollectors "github.com/DataDog/datadog-agent/pkg/util/containers/collectors"
+	"github.com/DataDog/datadog-agent/pkg/util/log"
 )
 
 // RTContainer is a singleton RTContainerCheck.
@@ -24,15 +23,12 @@ type RTContainerCheck struct {
 }
 
 // Init initializes a RTContainerCheck instance.
-func (r *RTContainerCheck) Init(cfg *config.AgentConfig, sysInfo *model.SystemInfo) {
+func (r *RTContainerCheck) Init(_ *config.AgentConfig, sysInfo *model.SystemInfo) {
 	r.sysInfo = sysInfo
 }
 
 // Name returns the name of the RTContainerCheck.
 func (r *RTContainerCheck) Name() string { return "rtcontainer" }
-
-// Endpoint returns the endpoint where this check is submitted.
-func (r *RTContainerCheck) Endpoint() string { return "/api/v1/container" }
 
 // RealTime indicates if this check only runs in real-time mode.
 func (r *RTContainerCheck) RealTime() bool { return true }
@@ -40,8 +36,19 @@ func (r *RTContainerCheck) RealTime() bool { return true }
 // Run runs the real-time container check getting container-level stats from the Cgroups and Docker APIs.
 func (r *RTContainerCheck) Run(cfg *config.AgentConfig, groupID int32) ([]model.MessageBody, error) {
 	ctrList, err := util.GetContainers()
+
+	if err == containercollectors.ErrPermaFail || err == containercollectors.ErrNothingYet {
+		log.Trace("container collector was not detected, container check will not return any data")
+		return nil, nil
+	}
+
 	if err != nil {
 		return nil, err
+	}
+
+	if len(ctrList) == 0 {
+		log.Trace("no containers found")
+		return nil, nil
 	}
 
 	// End check early if this is our first run.
@@ -52,19 +59,20 @@ func (r *RTContainerCheck) Run(cfg *config.AgentConfig, groupID int32) ([]model.
 	}
 
 	groupSize := len(ctrList) / cfg.MaxPerMessage
-	if len(ctrList) != cfg.MaxPerMessage {
+	if len(ctrList)%cfg.MaxPerMessage != 0 {
 		groupSize++
 	}
 	chunked := fmtContainerStats(ctrList, r.lastRates, r.lastRun, groupSize)
 	messages := make([]model.MessageBody, 0, groupSize)
 	for i := 0; i < groupSize; i++ {
 		messages = append(messages, &model.CollectorContainerRealTime{
-			HostName:    cfg.HostName,
-			Stats:       chunked[i],
-			NumCpus:     int32(runtime.NumCPU()),
-			TotalMemory: r.sysInfo.TotalMemory,
-			GroupId:     groupID,
-			GroupSize:   int32(groupSize),
+			HostName:          cfg.HostName,
+			Stats:             chunked[i],
+			NumCpus:           int32(runtime.NumCPU()),
+			TotalMemory:       r.sysInfo.TotalMemory,
+			GroupId:           groupID,
+			GroupSize:         int32(groupSize),
+			ContainerHostType: cfg.ContainerHostType,
 		})
 	}
 
@@ -105,18 +113,18 @@ func fmtContainerStats(
 			UserPct:     calculateCtrPct(ctr.CPU.User, lastCtr.CPU.User, sys2, sys1, cpus, lastRun),
 			SystemPct:   calculateCtrPct(ctr.CPU.System, lastCtr.CPU.System, sys2, sys1, cpus, lastRun),
 			TotalPct:    calculateCtrPct(ctr.CPU.User+ctr.CPU.System, lastCtr.CPU.User+lastCtr.CPU.System, sys2, sys1, cpus, lastRun),
-			CpuLimit:    float32(ctr.CPULimit),
+			CpuLimit:    float32(ctr.Limits.CPULimit),
 			MemRss:      ctr.Memory.RSS,
 			MemCache:    ctr.Memory.Cache,
-			MemLimit:    ctr.MemLimit,
+			MemLimit:    ctr.Limits.MemLimit,
 			Rbps:        calculateRate(ctr.IO.ReadBytes, lastCtr.IO.ReadBytes, lastRun),
 			Wbps:        calculateRate(ctr.IO.WriteBytes, lastCtr.IO.WriteBytes, lastRun),
 			NetRcvdPs:   calculateRate(ifStats.PacketsRcvd, lastCtr.NetworkSum.PacketsRcvd, lastRun),
 			NetSentPs:   calculateRate(ifStats.PacketsSent, lastCtr.NetworkSum.PacketsSent, lastRun),
 			NetRcvdBps:  calculateRate(ifStats.BytesRcvd, lastCtr.NetworkSum.BytesRcvd, lastRun),
 			NetSentBps:  calculateRate(ifStats.BytesSent, lastCtr.NetworkSum.BytesSent, lastRun),
-			ThreadCount: ctr.ThreadCount,
-			ThreadLimit: ctr.ThreadLimit,
+			ThreadCount: ctr.CPU.ThreadCount,
+			ThreadLimit: ctr.Limits.ThreadLimit,
 			State:       model.ContainerState(model.ContainerState_value[ctr.State]),
 			Health:      model.ContainerHealth(model.ContainerHealth_value[ctr.Health]),
 			Started:     ctr.StartedAt,

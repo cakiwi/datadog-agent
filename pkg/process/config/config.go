@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -13,9 +14,11 @@ import (
 	"strings"
 	"time"
 
+	model "github.com/DataDog/agent-payload/process"
 	"github.com/DataDog/datadog-agent/pkg/config"
 	"github.com/DataDog/datadog-agent/pkg/process/util"
-	ecsutil "github.com/DataDog/datadog-agent/pkg/util/ecs"
+	"github.com/DataDog/datadog-agent/pkg/process/util/api"
+	"github.com/DataDog/datadog-agent/pkg/util/fargate"
 	"github.com/DataDog/datadog-agent/pkg/util/log"
 )
 
@@ -24,12 +27,8 @@ var (
 	// This mirrors the configuration for the infrastructure agent.
 	defaultProxyPort = 3128
 
-	// defaultSystemProbeSocketPath is the default unix socket path to be used for connecting to the system probe
-	defaultSystemProbeSocketPath = "/opt/datadog-agent/run/sysprobe.sock"
 	// defaultSystemProbeFilePath is the default logging file for the system probe
 	defaultSystemProbeFilePath = "/var/log/datadog/system-probe.log"
-
-	defaultConntrackShortTermBufferSize = 10000
 
 	processChecks   = []string{"process", "rtprocess"}
 	containerChecks = []string{"container", "rtcontainer"}
@@ -45,50 +44,62 @@ type WindowsConfig struct {
 	AddNewArgs bool
 }
 
-// APIEndpoint is a single endpoint where process data will be submitted.
-type APIEndpoint struct {
-	APIKey   string
-	Endpoint *url.URL
-}
-
 // AgentConfig is the global config for the process-agent. This information
 // is sourced from config files and the environment variables.
 type AgentConfig struct {
-	Enabled            bool
-	HostName           string
-	APIEndpoints       []APIEndpoint
-	LogFile            string
-	LogLevel           string
-	LogToConsole       bool
-	QueueSize          int
-	Blacklist          []*regexp.Regexp
-	Scrubber           *DataScrubber
-	MaxPerMessage      int
-	MaxConnsPerMessage int
-	AllowRealTime      bool
-	Transport          *http.Transport `json:"-"`
-	DDAgentBin         string
-	StatsdHost         string
-	StatsdPort         int
-	ProcessExpVarPort  int
+	Enabled               bool
+	HostName              string
+	APIEndpoints          []api.Endpoint
+	OrchestratorEndpoints []api.Endpoint
+	LogFile               string
+	LogLevel              string
+	LogToConsole          bool
+	QueueSize             int // The number of items allowed in each delivery queue.
+	ProcessQueueBytes     int // The total number of bytes that can be enqueued for delivery to the process intake endpoint
+	PodQueueBytes         int // The total number of bytes that can be enqueued for delivery to the orchestrator endpoint
+	Blacklist             []*regexp.Regexp
+	Scrubber              *DataScrubber
+	MaxPerMessage         int
+	MaxConnsPerMessage    int
+	AllowRealTime         bool
+	Transport             *http.Transport `json:"-"`
+	DDAgentBin            string
+	StatsdHost            string
+	StatsdPort            int
+	ProcessExpVarPort     int
+	// host type of the agent, used to populate container payload with additional host information
+	ContainerHostType model.ContainerHostType
 
 	// System probe collection configuration
-	EnableSystemProbe            bool
-	EnableLocalSystemProbe       bool // To have the system probe embedded in the process-agent
-	DisableTCPTracing            bool
-	DisableUDPTracing            bool
-	DisableIPv6Tracing           bool
-	CollectLocalDNS              bool
-	SystemProbeSocketPath        string
-	SystemProbeLogFile           string
-	MaxTrackedConnections        uint
-	SysProbeBPFDebug             bool
-	ExcludedBPFLinuxVersions     []string
-	EnableConntrack              bool
-	ConntrackShortTermBufferSize int
-	SystemProbeDebugPort         int
-	MaxClosedConnectionsBuffered int
-	MaxConnectionsStateBuffered  int
+	EnableSystemProbe              bool
+	DisableTCPTracing              bool
+	DisableUDPTracing              bool
+	DisableIPv6Tracing             bool
+	DisableDNSInspection           bool
+	CollectLocalDNS                bool
+	SystemProbeAddress             string
+	SystemProbeLogFile             string
+	MaxTrackedConnections          uint
+	SysProbeBPFDebug               bool
+	ExcludedBPFLinuxVersions       []string
+	ExcludedSourceConnections      map[string][]string
+	ExcludedDestinationConnections map[string][]string
+	EnableConntrack                bool
+	ConntrackMaxStateSize          int
+	ConntrackRateLimit             int
+	SystemProbeDebugPort           int
+	ClosedChannelSize              int
+	MaxClosedConnectionsBuffered   int
+	MaxConnectionsStateBuffered    int
+	OffsetGuessThreshold           uint64
+
+	// DNS stats configuration
+	CollectDNSStats bool
+	DNSTimeout      time.Duration
+
+	// Orchestrator collection configuration
+	OrchestrationCollectionEnabled bool
+	KubeClusterName                string
 
 	// Check config
 	EnabledChecks  []string
@@ -117,10 +128,12 @@ func (a AgentConfig) CheckInterval(checkName string) time.Duration {
 }
 
 const (
-	defaultEndpoint          = "https://process.datadoghq.com"
-	maxMessageBatch          = 100
-	maxConnsMessageBatch     = 300
-	maxMaxTrackedConnections = 65536
+	defaultProcessEndpoint       = "https://process.datadoghq.com"
+	defaultOrchestratorEndpoint  = "https://orchestrator.datadoghq.com"
+	maxMessageBatch              = 100
+	maxConnsMessageBatch         = 1000
+	defaultMaxTrackedConnections = 65536
+	maxOffsetThreshold           = 3000
 )
 
 // NewDefaultTransport provides a http transport configuration with sane default timeouts
@@ -139,56 +152,74 @@ func NewDefaultTransport() *http.Transport {
 }
 
 // NewDefaultAgentConfig returns an AgentConfig with defaults initialized
-func NewDefaultAgentConfig() *AgentConfig {
-	u, err := url.Parse(defaultEndpoint)
+func NewDefaultAgentConfig(canAccessContainers bool) *AgentConfig {
+	processEndpoint, err := url.Parse(defaultProcessEndpoint)
+	if err != nil {
+		// This is a hardcoded URL so parsing it should not fail
+		panic(err)
+	}
+	orchestratorEndpoint, err := url.Parse(defaultOrchestratorEndpoint)
 	if err != nil {
 		// This is a hardcoded URL so parsing it should not fail
 		panic(err)
 	}
 
-	// Note: This only considers container sources that are already setup. It's possible that container sources may
-	//       need a few minutes to be ready.
-	_, err = util.GetContainers()
-	canAccessContainers := err == nil
+	var enabledChecks []string
+	if canAccessContainers {
+		enabledChecks = containerChecks
+	}
 
 	ac := &AgentConfig{
-		Enabled:            canAccessContainers, // We'll always run inside of a container.
-		APIEndpoints:       []APIEndpoint{{Endpoint: u}},
-		LogFile:            defaultLogFilePath,
-		LogLevel:           "info",
-		LogToConsole:       false,
-		QueueSize:          20,
+		Enabled:               canAccessContainers, // We'll always run inside of a container.
+		APIEndpoints:          []api.Endpoint{{Endpoint: processEndpoint}},
+		OrchestratorEndpoints: []api.Endpoint{{Endpoint: orchestratorEndpoint}},
+		LogFile:               defaultLogFilePath,
+		LogLevel:              "info",
+		LogToConsole:          false,
+
+		// Allow buffering up to 75 megabytes of payload data in total
+		ProcessQueueBytes: 60 * 1000 * 1000,
+		PodQueueBytes:     15 * 1000 * 1000,
+		// This can be fairly high as the input should get throttled by queue bytes first.
+		// Assuming we generate ~8 checks/minute (for process/network), this should allow buffering of ~30 minutes of data assuming it fits within the queue bytes memory budget
+		QueueSize: 256,
+
 		MaxPerMessage:      100,
-		MaxConnsPerMessage: 300,
+		MaxConnsPerMessage: 600,
 		AllowRealTime:      true,
 		HostName:           "",
 		Transport:          NewDefaultTransport(),
 		ProcessExpVarPort:  6062,
+		ContainerHostType:  model.ContainerHostType_notSpecified,
 
 		// Statsd for internal instrumentation
 		StatsdHost: "127.0.0.1",
 		StatsdPort: 8125,
 
 		// System probe collection configuration
-		EnableSystemProbe:            false,
-		EnableLocalSystemProbe:       false,
-		DisableTCPTracing:            false,
-		DisableUDPTracing:            false,
-		DisableIPv6Tracing:           false,
-		SystemProbeSocketPath:        defaultSystemProbeSocketPath,
-		SystemProbeLogFile:           defaultSystemProbeFilePath,
-		MaxTrackedConnections:        maxMaxTrackedConnections,
-		EnableConntrack:              true,
-		ConntrackShortTermBufferSize: defaultConntrackShortTermBufferSize,
+		EnableSystemProbe:     false,
+		DisableTCPTracing:     false,
+		DisableUDPTracing:     false,
+		DisableIPv6Tracing:    false,
+		DisableDNSInspection:  false,
+		SystemProbeAddress:    defaultSystemProbeAddress,
+		SystemProbeLogFile:    defaultSystemProbeFilePath,
+		MaxTrackedConnections: defaultMaxTrackedConnections,
+		EnableConntrack:       true,
+		ClosedChannelSize:     500,
+		ConntrackMaxStateSize: defaultMaxTrackedConnections * 2,
+		ConntrackRateLimit:    500,
+		OffsetGuessThreshold:  400,
 
 		// Check config
-		EnabledChecks: containerChecks,
+		EnabledChecks: enabledChecks,
 		CheckIntervals: map[string]time.Duration{
 			"process":     10 * time.Second,
 			"rtprocess":   2 * time.Second,
 			"container":   10 * time.Second,
 			"rtcontainer": 2 * time.Second,
 			"connections": 30 * time.Second,
+			"pod":         10 * time.Second,
 		},
 
 		// DataScrubber to hide command line sensitive words
@@ -224,7 +255,24 @@ func loadConfigIfExists(path string) error {
 			config.Datadog.SetConfigFile(path)
 		}
 
-		if err := config.LoadWithoutSecret(); err != nil {
+		if _, err := config.LoadWithoutSecret(); err != nil {
+			return err
+		}
+	} else {
+		log.Infof("no config exists at %s, ignoring...", path)
+	}
+	return nil
+}
+
+func mergeConfigIfExists(path string) error {
+	if util.PathExists(path) {
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+
+		if err := config.Datadog.MergeConfig(file); err != nil {
 			return err
 		}
 	} else {
@@ -237,14 +285,20 @@ func loadConfigIfExists(path string) error {
 // if there is no file available. In this case we'll configure only via environment.
 func NewAgentConfig(loggerName config.LoggerName, yamlPath, netYamlPath string) (*AgentConfig, error) {
 	var err error
-	cfg := NewDefaultAgentConfig()
+
+	// Note: This only considers container sources that are already setup. It's possible that container sources may
+	//       need a few minutes to be ready on newly provisioned hosts.
+	_, err = util.GetContainers()
+	canAccessContainers := err == nil
+
+	cfg := NewDefaultAgentConfig(canAccessContainers)
 
 	// For Agent 6 we will have a YAML config file to use.
 	if err := loadConfigIfExists(yamlPath); err != nil {
 		return nil, err
 	}
 
-	if err := cfg.loadProcessYamlConfig(yamlPath); err != nil {
+	if err := cfg.LoadProcessYamlConfig(yamlPath); err != nil {
 		return nil, err
 	}
 
@@ -255,7 +309,7 @@ func NewAgentConfig(loggerName config.LoggerName, yamlPath, netYamlPath string) 
 	}
 
 	// For system probe, there is an additional config file that is shared with the system-probe
-	loadConfigIfExists(netYamlPath)
+	mergeConfigIfExists(netYamlPath) //nolint:errcheck
 	if err = cfg.loadSysProbeYamlConfig(netYamlPath); err != nil {
 		return nil, err
 	}
@@ -272,17 +326,18 @@ func NewAgentConfig(loggerName config.LoggerName, yamlPath, netYamlPath string) 
 	}
 
 	if cfg.HostName == "" {
-		if ecsutil.IsFargateInstance() {
-			// Fargate tasks should have no concept of host names, so we're using the task ARN.
-			if taskMeta, err := ecsutil.GetTaskMetadata(); err == nil {
-				cfg.HostName = fmt.Sprintf("fargate_task:%s", taskMeta.TaskARN)
+		if fargate.IsFargateInstance() {
+			if hostname, err := fargate.GetFargateHost(); err == nil {
+				cfg.HostName = hostname
 			} else {
-				log.Errorf("Failed to retrieve Fargate task metadata: %s", err)
+				log.Errorf("Cannot get Fargate host: %v", err)
 			}
 		} else if hostname, err := getHostname(cfg.DDAgentBin); err == nil {
 			cfg.HostName = hostname
 		}
 	}
+
+	cfg.ContainerHostType = getContainerHostType()
 
 	if cfg.proxy != nil {
 		cfg.Transport.Proxy = cfg.proxy
@@ -295,13 +350,18 @@ func NewAgentConfig(loggerName config.LoggerName, yamlPath, netYamlPath string) 
 		cfg.Windows.ArgsRefreshInterval = -1
 	}
 
+	// activate the pod collection if enabled and we have the cluster name set
+	if cfg.OrchestrationCollectionEnabled && cfg.KubeClusterName != "" {
+		cfg.EnabledChecks = append(cfg.EnabledChecks, "pod")
+	}
+
 	return cfg, nil
 }
 
 // NewSystemProbeConfig returns a system-probe specific AgentConfig using a configuration file. It can be nil
 // if there is no file available. In this case we'll configure only via environment.
 func NewSystemProbeConfig(loggerName config.LoggerName, yamlPath string) (*AgentConfig, error) {
-	cfg := NewDefaultAgentConfig()
+	cfg := NewDefaultAgentConfig(false) // We don't access the container APIs in the system-probe
 
 	// When the system-probe is enabled in a separate container, we need a way to also disable the system-probe
 	// packaged in the main agent container (without disabling network collection on the process-agent).
@@ -312,7 +372,7 @@ func NewSystemProbeConfig(loggerName config.LoggerName, yamlPath string) (*Agent
 		return cfg, nil
 	}
 
-	loadConfigIfExists(yamlPath)
+	loadConfigIfExists(yamlPath) //nolint:errcheck
 	if err := cfg.loadSysProbeYamlConfig(yamlPath); err != nil {
 		return nil, err
 	}
@@ -326,38 +386,45 @@ func NewSystemProbeConfig(loggerName config.LoggerName, yamlPath string) (*Agent
 	return cfg, nil
 }
 
+// getContainerHostType uses the fargate library to detect container environment and returns the protobuf version of it
+func getContainerHostType() model.ContainerHostType {
+	switch fargate.GetOrchestrator() {
+	case fargate.ECS:
+		return model.ContainerHostType_fargateECS
+	case fargate.EKS:
+		return model.ContainerHostType_fargateEKS
+	}
+	return model.ContainerHostType_notSpecified
+}
+
 func loadEnvVariables() {
-	for envKey, cfgKey := range map[string]string{
-		"DD_PROCESS_AGENT_CONTAINER_SOURCE": "process_config.container_source",
-		"DD_SCRUB_ARGS":                     "process_config.scrub_args",
-		"DD_STRIP_PROCESS_ARGS":             "process_config.strip_proc_arguments",
-		"DD_PROCESS_AGENT_URL":              "process_config.process_dd_url",
+	// The following environment variables will be loaded in the order listed, meaning variables
+	// further down the list may override prior variables.
+	for _, variable := range []struct{ env, cfg string }{
+		{"DD_PROCESS_AGENT_CONTAINER_SOURCE", "process_config.container_source"},
+		{"DD_SCRUB_ARGS", "process_config.scrub_args"},
+		{"DD_STRIP_PROCESS_ARGS", "process_config.strip_proc_arguments"},
+		{"DD_PROCESS_AGENT_URL", "process_config.process_dd_url"},
+		{"DD_ORCHESTRATOR_URL", "process_config.orchestrator_dd_url"},
+		{"DD_HOSTNAME", "hostname"},
+		{"DD_DOGSTATSD_PORT", "dogstatsd_port"},
+		{"DD_BIND_HOST", "bind_host"},
+		{"HTTPS_PROXY", "proxy.https"},
+		{"DD_PROXY_HTTPS", "proxy.https"},
 
-		// Note: this feature is in development and should not be used in production environments
-		"DD_SYSTEM_PROBE_ENABLED":   "system_probe_config.enabled",
-		"DD_SYSPROBE_SOCKET":        "system_probe_config.sysprobe_socket",
-		"DD_DISABLE_TCP_TRACING":    "system_probe_config.disable_tcp",
-		"DD_DISABLE_UDP_TRACING":    "system_probe_config.disable_udp",
-		"DD_DISABLE_IPV6_TRACING":   "system_probe_config.disable_ipv6",
-		"DD_COLLECT_LOCAL_DNS":      "system_probe_config.collect_local_dns",
-		"DD_USE_LOCAL_SYSTEM_PROBE": "system_probe_config.use_local_system_probe",
-
-		"DD_HOSTNAME":       "hostname",
-		"DD_DOGSTATSD_PORT": "dogstatsd_port",
-		"DD_BIND_HOST":      "bind_host",
-		"HTTPS_PROXY":       "proxy.https",
-		"DD_PROXY_HTTPS":    "proxy.https",
-
-		"DD_LOGS_STDOUT":    "log_to_console",
-		"LOG_TO_CONSOLE":    "log_to_console",
-		"DD_LOG_TO_CONSOLE": "log_to_console",
-		"LOG_LEVEL":         "log_level", // Support LOG_LEVEL and DD_LOG_LEVEL but prefer DD_LOG_LEVEL
-		"DD_LOG_LEVEL":      "log_level",
+		{"DD_LOGS_STDOUT", "log_to_console"},
+		{"LOG_TO_CONSOLE", "log_to_console"},
+		{"DD_LOG_TO_CONSOLE", "log_to_console"},
+		{"LOG_LEVEL", "log_level"}, // Support LOG_LEVEL and DD_LOG_LEVEL but prefer DD_LOG_LEVEL
+		{"DD_LOG_LEVEL", "log_level"},
 	} {
-		if v, ok := os.LookupEnv(envKey); ok {
-			config.Datadog.Set(cfgKey, v)
+		if v, ok := os.LookupEnv(variable.env); ok {
+			config.Datadog.Set(variable.cfg, v)
 		}
 	}
+
+	// Load the System Probe environment variables
+	loadSysProbeEnvVariables()
 
 	// Support API_KEY and DD_API_KEY but prefer DD_API_KEY.
 	apiKey, envKey := os.Getenv("DD_API_KEY"), "DD_API_KEY"
@@ -367,11 +434,47 @@ func loadEnvVariables() {
 
 	if apiKey != "" { // We don't want to overwrite the API KEY provided as an environment variable
 		log.Infof("overriding API key from env %s value", envKey)
-		config.Datadog.Set("api_key", strings.TrimSpace(strings.Split(apiKey, ",")[0]))
+		config.Datadog.Set("api_key", config.SanitizeAPIKey(strings.Split(apiKey, ",")[0]))
 	}
 
 	if v := os.Getenv("DD_CUSTOM_SENSITIVE_WORDS"); v != "" {
 		config.Datadog.Set("process_config.custom_sensitive_words", strings.Split(v, ","))
+	}
+
+	if v := os.Getenv("DD_PROCESS_ADDITIONAL_ENDPOINTS"); v != "" {
+		endpoints := make(map[string][]string)
+		if err := json.Unmarshal([]byte(v), &endpoints); err != nil {
+			log.Errorf(`Could not parse DD_PROCESS_ADDITIONAL_ENDPOINTS: %v. It must be of the form '{"https://process.agent.datadoghq.com": ["apikey1", ...], ...}'.`, err)
+		} else {
+			config.Datadog.Set("process_config.additional_endpoints", endpoints)
+		}
+	}
+
+	if v := os.Getenv("DD_ORCHESTRATOR_ADDITIONAL_ENDPOINTS"); v != "" {
+		endpoints := make(map[string][]string)
+		if err := json.Unmarshal([]byte(v), &endpoints); err != nil {
+			log.Errorf(`Could not parse DD_ORCHESTRATOR_ADDITIONAL_ENDPOINTS: %v. It must be of the form '{"https://process.agent.datadoghq.com": ["apikey1", ...], ...}'.`, err)
+		} else {
+			config.Datadog.Set("process_config.orchestrator_additional_endpoints", endpoints)
+		}
+	}
+}
+
+func loadSysProbeEnvVariables() {
+	for _, variable := range []struct{ env, cfg string }{
+		{"DD_SYSTEM_PROBE_ENABLED", "system_probe_config.enabled"},
+		{"DD_SYSPROBE_SOCKET", "system_probe_config.sysprobe_socket"},
+		{"DD_SYSTEM_PROBE_CONNTRACK_IGNORE_ENOBUFS", "system_probe_config.conntrack_ignore_enobufs"},
+		{"DD_DISABLE_TCP_TRACING", "system_probe_config.disable_tcp"},
+		{"DD_DISABLE_UDP_TRACING", "system_probe_config.disable_udp"},
+		{"DD_DISABLE_IPV6_TRACING", "system_probe_config.disable_ipv6"},
+		{"DD_DISABLE_DNS_INSPECTION", "system_probe_config.disable_dns_inspection"},
+		{"DD_COLLECT_LOCAL_DNS", "system_probe_config.collect_local_dns"},
+	} {
+		if v, ok := os.LookupEnv(variable.env); ok {
+			config.Datadog.Set(variable.cfg, v)
+
+		}
 	}
 }
 
@@ -489,20 +592,6 @@ func constructProxy(host, scheme string, port int, user, password string) (proxy
 		return nil, err
 	}
 	return http.ProxyURL(u), nil
-}
-
-// SetupInitialLogger will set up a default logger before parsing config so we log errors nicely.
-// The default will be stdout since we can't assume any file is writable.
-func SetupInitialLogger(loggerName config.LoggerName) error {
-	return config.SetupLogger(
-		loggerName,
-		"info",
-		"",
-		"",
-		false,
-		true, // logToConsole
-		false,
-	)
 }
 
 func setupLogger(loggerName config.LoggerName, logFile string, cfg *AgentConfig) error {

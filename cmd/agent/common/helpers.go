@@ -1,7 +1,7 @@
 // Unless explicitly stated otherwise all files in this repository are licensed
 // under the Apache License Version 2.0.
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
-// Copyright 2016-2019 Datadog, Inc.
+// Copyright 2016-2020 Datadog, Inc.
 
 package common
 
@@ -14,15 +14,25 @@ import (
 
 // SetupConfig fires up the configuration system
 func SetupConfig(confFilePath string) error {
-	return setupConfig(confFilePath, false)
+	_, err := SetupConfigWithWarnings(confFilePath, "")
+	return err
+}
+
+// SetupConfigWithWarnings fires up the configuration system and returns warnings if any.
+func SetupConfigWithWarnings(confFilePath, configName string) (*config.Warnings, error) {
+	return setupConfig(confFilePath, configName, false)
 }
 
 // SetupConfigWithoutSecrets fires up the configuration system without secrets support
-func SetupConfigWithoutSecrets(confFilePath string) error {
-	return setupConfig(confFilePath, true)
+func SetupConfigWithoutSecrets(confFilePath string, configName string) error {
+	_, err := setupConfig(confFilePath, configName, true)
+	return err
 }
 
-func setupConfig(confFilePath string, withoutSecrets bool) error {
+func setupConfig(confFilePath string, configName string, withoutSecrets bool) (*config.Warnings, error) {
+	if configName != "" {
+		config.Datadog.SetConfigName(configName)
+	}
 	// set the paths where a config file is expected
 	if len(confFilePath) != 0 {
 		// if the configuration file path was supplied on the command line,
@@ -36,13 +46,15 @@ func setupConfig(confFilePath string, withoutSecrets bool) error {
 	config.Datadog.AddConfigPath(DefaultConfPath)
 	// load the configuration
 	var err error
+	var warnings *config.Warnings
+
 	if withoutSecrets {
-		err = config.LoadWithoutSecret()
+		warnings, err = config.LoadWithoutSecret()
 	} else {
-		err = config.Load()
+		warnings, err = config.Load()
 	}
 	if err != nil {
-		return fmt.Errorf("unable to load Datadog config file: %s", err)
+		return warnings, fmt.Errorf("unable to load Datadog config file: %s", err)
 	}
-	return nil
+	return warnings, nil
 }

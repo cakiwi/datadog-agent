@@ -18,23 +18,26 @@
 name "python2"
 
 if ohai["platform"] != "windows"
-  default_version "2.7.16"
+  default_version "2.7.18"
 
   dependency "ncurses"
   dependency "zlib"
   dependency "openssl"
+  dependency "pkg-config"
   dependency "bzip2"
   dependency "libsqlite3"
   dependency "libyaml"
 
   source :url => "http://python.org/ftp/python/#{version}/Python-#{version}.tgz",
-         :sha256 => "01da813a3600876f03f46db11cc5c408175e99f03af2ba942ef324389a83bad5"
+         :sha256 => "da3080e3b488f648a3d7a4560ddee895284c3380b11d6de75edb986526b9a814"
 
   relative_path "Python-#{version}"
 
   env = {
     "CFLAGS" => "-I#{install_dir}/embedded/include -O2 -g -pipe -fPIC",
     "LDFLAGS" => "-Wl,-rpath,#{install_dir}/embedded/lib -L#{install_dir}/embedded/lib",
+    "PKG_CONFIG" => "#{install_dir}/embedded/bin/pkg-config",
+    "PKG_CONFIG_PATH" => "#{install_dir}/embedded/lib/pkgconfig"
   }
 
   python_configure = ["./configure",
@@ -45,10 +48,10 @@ if ohai["platform"] != "windows"
                           "--with-universal-archs=intel",
                           "--enable-shared",
                           "--without-gcc",
-                          "CC=clang",
-                          "MACOSX_DEPLOYMENT_TARGET=10.12")
+                          "CC=clang")
   elsif linux?
-    python_configure.push("--enable-unicode=ucs4")
+    python_configure.push("--enable-unicode=ucs4",
+                          "--enable-shared")
   end
 
   build do
@@ -62,21 +65,29 @@ if ohai["platform"] != "windows"
     command "make install", :env => env
     delete "#{install_dir}/embedded/lib/python2.7/test"
 
+    move "#{install_dir}/embedded/bin/2to3", "#{install_dir}/embedded/bin/2to3-2.7"
+
     block do
       FileUtils.rm_f(Dir.glob("#{install_dir}/embedded/lib/python2.7/lib-dynload/readline.*"))
       FileUtils.rm_f(Dir.glob("#{install_dir}/embedded/lib/python2.7/lib-dynload/gdbm.so"))
       FileUtils.rm_f(Dir.glob("#{install_dir}/embedded/lib/python2.7/lib-dynload/dbm.so"))
+      FileUtils.rm_f(Dir.glob("#{install_dir}/embedded/lib/python2.7/distutils/command/wininst-*.exe"))
     end
   end
 
 else
-  default_version "2.7.16"
-
+  default_version "2.7.18"
   dependency "vc_redist"
-  source :url => "https://s3.amazonaws.com/dd-agent-omnibus/python-windows-#{version}-amd64.zip",
-         :sha256 => "6b9fdc51dde1ba6ae4cb698451900e1f8f1900ff1d56d9166dbeab06b10a4dce",
-         :extract => :seven_zip
 
+  if windows_arch_i386?
+    source :url => "https://dd-agent-omnibus.s3.amazonaws.com/python-windows-#{version}-x86.zip",
+           :sha256 => "c8309b3351610a7159e91e55f09f7341bc3bbdd67d2a5e3049a9d1157e5a9110",
+           :extract => :seven_zip
+  else
+    source :url => "https://dd-agent-omnibus.s3.amazonaws.com/python-windows-#{version}-amd64.zip",
+         :sha256 => "7989b2efe6106a3df82c47d403dbb166db6d4040f3654871323df7e724a9fdd2",
+         :extract => :seven_zip
+  end
   build do
     #
     # expand python zip into the embedded directory

@@ -1,7 +1,7 @@
 # Unless explicitly stated otherwise all files in this repository are licensed
 # under the Apache License Version 2.0.
 # This product includes software developed at Datadog (https:#www.datadoghq.com/).
-# Copyright 2016-2019 Datadog, Inc.
+# Copyright 2016-2020 Datadog, Inc.
 
 require './lib/ostools.rb'
 require 'json'
@@ -22,16 +22,26 @@ if arm?
   dependency 'libxslt'
 end
 
+if osx?
+  dependency 'unixodbc'
+end
+
 if linux?
   # add nfsiostat script
   dependency 'unixodbc'
+  dependency 'freetds'  # needed for SQL Server integration
   dependency 'nfsiostat'
   # need kerberos for hdfs
   dependency 'libkrb5'
+
+  unless suse? || arm?
+    dependency 'aerospike-py3'
+  end
 end
 
 relative_path 'integrations-core'
-whitelist_file "embedded/lib/python3.7"
+whitelist_file "embedded/lib/python3.8/site-packages/psycopg2"
+whitelist_file "embedded/lib/python3.8/site-packages/pymqi"
 
 source git: 'https://github.com/DataDog/integrations-core.git'
 
@@ -50,22 +60,44 @@ blacklist_folders = [
   'docker_daemon',
   'kubernetes',
   'ntp',                           # provided as a go check by the core agent
+  # Python 2-only
+  'tokumx',
 ]
 
 # package names of dependencies that won't be added to the Agent Python environment
 blacklist_packages = Array.new
 
+# We build these manually
+blacklist_packages.push(/^aerospike==/)
+
 if suse?
   blacklist_folders.push('aerospike')  # Temporarily blacklist Aerospike until builder supports new dependency
-  blacklist_packages.push(/^aerospike==/)  # Temporarily blacklist Aerospike until builder supports new dependency
+end
+
+if osx?
+  # Blacklist lxml as it fails MacOS notarization: the etree.cpython-37m-darwin.so and objectify.cpython-37m-darwin.so
+  # binaries were built with a MacOS SDK lower than 10.9.
+  # This can be removed once a new lxml version with binaries built with a newer SDK is available.
+  blacklist_packages.push(/^lxml==/)
+  # Blacklist ibm_was, which depends on lxml
+  blacklist_folders.push('ibm_was')
+
+  # Blacklist aerospike, new version 3.10 is not supported on MacOS yet
+  blacklist_folders.push('aerospike')
 end
 
 if arm?
   # These two checks don't build on ARM
   blacklist_folders.push('aerospike')
-  blacklist_packages.push(/^aerospike==/)
   blacklist_folders.push('ibm_mq')
   blacklist_packages.push(/^pymqi==/)
+end
+
+# _64_bit checks the kernel arch.  On windows, the builder is 64 bit
+# even when doing a 32 bit build.  Do a specific check for the 32 bit
+# build
+if arm? || !_64_bit? || (windows? && windows_arch_i386?)
+  blacklist_packages.push(/^orjson==/)
 end
 
 final_constraints_file = 'final_constraints-py3.txt'
@@ -97,9 +129,9 @@ build do
     # Prepare the build env, these dependencies are only needed to build and
     # install the core integrations.
     #
-    command "#{pip} install wheel==0.30.0"
-    command "#{pip} install pip-tools==2.0.2"
-    uninstall_buildtime_deps = ['six', 'click', 'first', 'pip-tools']
+    command "#{pip} install wheel==0.34.1"
+    command "#{pip} install pip-tools==4.2.0"
+    uninstall_buildtime_deps = ['rtloader', 'click', 'first', 'pip-tools']
     nix_build_env = {
       "CFLAGS" => "-I#{install_dir}/embedded/include -I/opt/mqm/inc",
       "CXXFLAGS" => "-I#{install_dir}/embedded/include -I/opt/mqm/inc",
@@ -137,6 +169,9 @@ build do
         requirements.push(line)
       end
     end
+
+    # Adding pympler for memory debug purposes
+    requirements.push("pympler==0.7")
 
     # Render the filtered requirements file
     erb source: "static_requirements.txt.erb",
@@ -227,12 +262,16 @@ build do
       end
 
       # We don't have auto_conf on windows yet
-      if os != 'windows'
-        auto_conf_yaml = "#{check_dir}/datadog_checks/#{check}/data/auto_conf.yaml"
-        if File.exist? auto_conf_yaml
-          mkdir check_conf_dir
-          copy auto_conf_yaml, "#{check_conf_dir}/" unless File.exist? "#{check_conf_dir}/auto_conf.yaml"
-        end
+      auto_conf_yaml = "#{check_dir}/datadog_checks/#{check}/data/auto_conf.yaml"
+      if File.exist? auto_conf_yaml
+        mkdir check_conf_dir
+        copy auto_conf_yaml, "#{check_conf_dir}/" unless File.exist? "#{check_conf_dir}/auto_conf.yaml"
+      end
+
+      # Copy SNMP profiles
+      profiles = "#{check_dir}/datadog_checks/#{check}/data/profiles"
+      if File.exist? profiles
+        copy profiles, "#{check_conf_dir}/"
       end
 
       File.file?("#{check_dir}/setup.py") || next
@@ -242,6 +281,14 @@ build do
         command "#{pip} install --no-deps .", :env => nix_build_env, :cwd => "#{project_dir}/#{check}"
       end
     end
+
+    # Patch applies to only one file: set it explicitly as a target, no need for -p
+    if windows?
+      patch :source => "jpype_0_7.patch", :target => "#{python_3_embedded}/Lib/site-packages/jaydebeapi/__init__.py"
+    else
+      patch :source => "jpype_0_7.patch", :target => "#{install_dir}/embedded/lib/python3.8/site-packages/jaydebeapi/__init__.py"
+    end
+
   end
 
   # Run pip check to make sure the agent's python environment is clean, all the dependencies are compatible
@@ -255,5 +302,4 @@ build do
   # Used by the `datadog-agent integration` command to prevent downgrading a check to a version
   # older than the one shipped in the agent
   copy "#{project_dir}/requirements-agent-release.txt", "#{install_dir}/"
-
 end
